@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -12,6 +14,8 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 
 from app.core.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 YOUTUBE_SCOPES = [
     "https://www.googleapis.com/auth/youtube.upload",
@@ -25,6 +29,68 @@ def _token_path() -> Path:
     path = Path(settings.media_root) / "cache" / "youtube_oauth_token.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def _read_token_raw() -> dict[str, Any] | None:
+    path = _token_path()
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _write_token_raw(raw: dict[str, Any]) -> None:
+    path = _token_path()
+    path.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+
+
+def _expiry_from_raw(raw: dict[str, Any]) -> datetime | None:
+    """Parse saved expiry; fall back from expires_in relative to saved_at."""
+    exp = raw.get("expiry")
+    if isinstance(exp, str) and exp.strip():
+        try:
+            dt = datetime.fromisoformat(exp.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except ValueError:
+            pass
+    expires_in = raw.get("expires_in")
+    saved_at = raw.get("saved_at")
+    if expires_in and saved_at:
+        try:
+            base = datetime.fromisoformat(str(saved_at).replace("Z", "+00:00"))
+            if base.tzinfo is None:
+                base = base.replace(tzinfo=timezone.utc)
+            return base + timedelta(seconds=int(expires_in))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _persist_credentials(creds: Credentials, previous: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Write access + refresh tokens with absolute expiry so we can refresh later."""
+    prev = previous or _read_token_raw() or {}
+    refresh = creds.refresh_token or prev.get("refresh_token")
+    expiry = creds.expiry
+    if expiry is not None and expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=timezone.utc)
+    raw: dict[str, Any] = {
+        **{k: v for k, v in prev.items() if k not in {"access_token", "refresh_token", "expiry", "saved_at"}},
+        "token_type": "Bearer",
+        "access_token": creds.token,
+        "refresh_token": refresh,
+        "scope": " ".join(creds.scopes or YOUTUBE_SCOPES),
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if expiry is not None:
+        raw["expiry"] = expiry.astimezone(timezone.utc).isoformat()
+        remaining = int((expiry.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds())
+        raw["expires_in"] = max(remaining, 0)
+    _write_token_raw(raw)
+    return raw
 
 
 def build_auth_url(state: str = "ragam") -> str:
@@ -44,6 +110,7 @@ def build_auth_url(state: str = "ragam") -> str:
 
 def exchange_code(code: str) -> dict[str, Any]:
     settings = get_settings()
+    previous = _read_token_raw() or {}
     with httpx.Client(timeout=30.0) as client:
         response = client.post(
             "https://oauth2.googleapis.com/token",
@@ -58,17 +125,29 @@ def exchange_code(code: str) -> dict[str, Any]:
         response.raise_for_status()
         tokens = response.json()
 
-    _token_path().write_text(json.dumps(tokens, indent=2), encoding="utf-8")
+    # Re-auth often omits refresh_token — keep the previous one.
+    if not tokens.get("refresh_token") and previous.get("refresh_token"):
+        tokens["refresh_token"] = previous["refresh_token"]
+
+    now = datetime.now(timezone.utc)
+    expires_in = int(tokens.get("expires_in") or 3600)
+    tokens["saved_at"] = now.isoformat()
+    tokens["expiry"] = (now + timedelta(seconds=expires_in)).isoformat()
+    _write_token_raw(tokens)
     return tokens
 
 
-def load_credentials() -> Credentials | None:
+def load_credentials(*, force_refresh: bool = False) -> Credentials | None:
     path = _token_path()
     if not path.exists():
         return None
 
     settings = get_settings()
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw = _read_token_raw() or {}
+    if not raw.get("refresh_token") and not raw.get("access_token"):
+        return None
+
+    expiry = _expiry_from_raw(raw)
     creds = Credentials(
         token=raw.get("access_token"),
         refresh_token=raw.get("refresh_token"),
@@ -76,16 +155,29 @@ def load_credentials() -> Credentials | None:
         client_id=settings.google_client_id,
         client_secret=settings.google_client_secret,
         scopes=YOUTUBE_SCOPES,
+        expiry=expiry.replace(tzinfo=None) if expiry else None,  # google-auth uses naive UTC
     )
-    if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-        raw["access_token"] = creds.token
-        path.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+
+    # Missing expiry + refresh_token ⇒ assume stale (old bug) and refresh once.
+    needs_refresh = bool(creds.refresh_token) and (
+        force_refresh or creds.expired or expiry is None or not creds.token
+    )
+    if needs_refresh:
+        try:
+            creds.refresh(Request())
+            _persist_credentials(creds, previous=raw)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("YouTube token refresh failed: %s", exc)
+            if force_refresh or not creds.token:
+                raise RuntimeError(
+                    "YouTube session expired — reconnect via Connect YouTube"
+                ) from exc
     return creds
 
 
 def is_connected() -> bool:
-    return _token_path().exists()
+    raw = _read_token_raw()
+    return bool(raw and (raw.get("refresh_token") or raw.get("access_token")))
 
 
 def fetch_mine_channel() -> dict[str, Any]:
@@ -93,14 +185,22 @@ def fetch_mine_channel() -> dict[str, Any]:
     if creds is None or not creds.token:
         raise RuntimeError("YouTube not connected. Visit /api/v1/youtube/auth first.")
 
-    with httpx.Client(timeout=30.0) as client:
-        response = client.get(
-            "https://www.googleapis.com/youtube/v3/channels",
-            params={"part": "snippet,statistics,contentDetails", "mine": "true"},
-            headers={"Authorization": f"Bearer {creds.token}"},
-        )
-        response.raise_for_status()
-        data = response.json()
+    def _get(token: str) -> httpx.Response:
+        with httpx.Client(timeout=30.0) as client:
+            return client.get(
+                "https://www.googleapis.com/youtube/v3/channels",
+                params={"part": "snippet,statistics,contentDetails", "mine": "true"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+    response = _get(creds.token)
+    if response.status_code == 401 and creds.refresh_token:
+        creds = load_credentials(force_refresh=True)
+        if creds is None or not creds.token:
+            raise RuntimeError("YouTube not connected. Visit /api/v1/youtube/auth first.")
+        response = _get(creds.token)
+    response.raise_for_status()
+    data = response.json()
 
     items = data.get("items") or []
     if not items:
@@ -157,6 +257,7 @@ def list_playlists(max_results: int = 50) -> list[dict[str, str]]:
 
     items: list[dict[str, str]] = []
     page_token: str | None = None
+    refreshed = False
     with httpx.Client(timeout=30.0) as client:
         while True:
             params: dict[str, Any] = {
@@ -171,6 +272,12 @@ def list_playlists(max_results: int = 50) -> list[dict[str, str]]:
                 params=params,
                 headers={"Authorization": f"Bearer {creds.token}"},
             )
+            if response.status_code == 401 and creds.refresh_token and not refreshed:
+                creds = load_credentials(force_refresh=True)
+                if creds is None or not creds.token:
+                    raise RuntimeError("YouTube not connected. Visit /api/v1/youtube/auth first.")
+                refreshed = True
+                continue
             response.raise_for_status()
             data = response.json()
             for row in data.get("items") or []:

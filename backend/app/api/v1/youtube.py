@@ -49,7 +49,7 @@ def youtube_callback(code: str | None = None, error: str | None = None, state: s
       <p>Channel ID: <code>{channel.get('id')}</code></p>
       <p>Handle: <code>{channel.get('custom_url') or channel.get('configured_handle')}</code></p>
       {match_note}
-      <p><a href="http://localhost:5173">Back to dashboard</a> ·
+      <p><a href="/">Back to studio</a> ·
          <a href="/api/v1/youtube/channel">API channel JSON</a></p>
     </body></html>
     """

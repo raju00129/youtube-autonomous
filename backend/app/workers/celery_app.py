@@ -1,4 +1,5 @@
 from celery import Celery
+from celery.schedules import crontab
 
 from app.core.config import get_settings
 
@@ -24,6 +25,12 @@ celery_app.conf.update(
             "task": "app.workers.tasks.pipeline_tick",
             "schedule": 300.0,  # seconds
             "options": {"expires": 240},
+        },
+        # Next calendar day after publish: wipe local audio/video/thumbs (keep YT links)
+        "cleanup-published-media-daily": {
+            "task": "app.workers.tasks.cleanup_published_media",
+            "schedule": crontab(hour=3, minute=20),
+            "options": {"expires": 3600},
         },
     },
 )

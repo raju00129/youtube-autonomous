@@ -30,52 +30,24 @@ def _build_prompt(
     regenerate: bool,
     previous_lyrics: str | None,
     previous_style: str | None,
+    avoid_echo: str | None = None,
+    variation_seed: str | None = None,
 ) -> str:
-    vocal_label = "female" if vocal == "f" else "male"
-    regen = ""
-    if regenerate or previous_lyrics:
-        regen = f"""
-REGENERATE — write a NEW draft (new Pallavi, Slokam, Charanams; new style_prompt tempo/colour).
-Do NOT copy previous Pallavi or style.
-Previous style (do not copy): {(previous_style or "(none)")[:500]}
-Previous lyrics (do not copy):
-{(previous_lyrics or "(none)")[:1800]}
-"""
-    return f"""You are a senior Telugu keerthana / bhajan lyricist for YouTube channel "Ragam Spiritual".
-Write ORIGINAL temple-grade lyrics in Telugu script for Suno custom mode — deep traditional bhakti poetry, NOT everyday speech.
+    from app.lyrics_prompt import build_lyrics_prompt
 
-LANGUAGE REGISTER (critical)
-- Sung lines MUST be Telugu script (తెలుగు). No transliteration-only; no Hindi Devanagari for sung lines.
-- CLASSICAL / granthika-leaning BHAKTI Telugu — sacred poetic tongue of old keerthanas.
-- Deep spiritual vocabulary (nama, guna, leela, karuna, sharanagati, jyothi, amrutham, hrudayam, divya…).
-- FORBIDDEN: colloquial chat Telugu, newspaper prose, film slang, English mix-ins in sung lines, shallow common words when a traditional synonym exists.
-- Only Hindu deities/avataras (Shiva, Parvati, Sri Vishnu, Sri Rama, Krishna, Narasimha, Lakshmi, Saraswati, Durga, Hanuman, Ganesha, Subrahmanya, Venkateswara, Surya, Ayyappa, Annapurna…). Never Sai Baba / Shirdi.
-
-BRIEF
-- Language: {language or "te"}
-- Title hint: {title or "(invent a melodic traditional Telugu title)"}
-- Deity / theme: {deity or "general Hindu devotion"}
-- Topic / mood: {topic or "peaceful traditional temple devotion"}
-- Lead vocal: {vocal_label}
-- Music direction: {music_genre or "traditional Telugu Carnatic-devotional bhajan"}
-{regen}
-
-FORM (exact tags, Pallavi repeats unchanged):
-[Pallavi] 2–4 nama-rich melodic lines
-[Anupallavi] 2–4 lines
-[Pallavi] SAME text
-[Slokam] 2–4 original Sanskrit or Sanskritised-Telugu lines
-[Pallavi] SAME text
-[Charanam 1] 4–6 deep poetic lines
-[Pallavi] SAME text
-[Charanam 2] 4–6 deep poetic lines
-[Pallavi] SAME text (final)
-
-Also write English style_prompt for Suno (comma tags, ~450 chars): traditional Telugu Carnatic/temple only; tanpura; percussion matching energy; {vocal_label} Telugu vocalist; EXPLICIT tempo e.g. "slow 68 BPM" or "medium 96 BPM"; temple reverb; Pallavi repeats; brief sloka break. Tempo MUST fit these lyrics.
-
-Respond with ONLY valid JSON (no markdown):
-{{"title":"...","style_prompt":"...","lyrics":"...","tempo":"slow|slow_medium|medium|medium_brisk","bpm_hint":90,"energy":"..."}}"""
-
+    return build_lyrics_prompt(
+        title=title,
+        deity=deity,
+        topic=topic,
+        vocal=vocal,
+        language=language,
+        music_genre=music_genre,
+        regenerate=regenerate,
+        previous_lyrics=previous_lyrics,
+        previous_style=previous_style,
+        avoid_echo=avoid_echo,
+        variation_seed=variation_seed,
+    )
 
 def _extract_json(text: str) -> dict[str, Any]:
     raw = (text or "").strip()
@@ -99,6 +71,8 @@ def generate_lyrics(
     regenerate: bool = False,
     previous_lyrics: str | None = None,
     previous_style: str | None = None,
+    avoid_echo: str | None = None,
+    variation_seed: str | None = None,
 ) -> dict[str, Any]:
     settings = get_settings()
     if not settings.openai_api_key.strip():
@@ -118,11 +92,13 @@ def generate_lyrics(
         regenerate=regenerate,
         previous_lyrics=previous_lyrics,
         previous_style=previous_style,
+        avoid_echo=avoid_echo,
+        variation_seed=variation_seed,
     )
 
     payload = {
         "model": settings.openai_llm_model,
-        "temperature": 0.9 if regenerate else 0.75,
+        "temperature": 0.95 if regenerate else 0.88,
         "response_format": {"type": "json_object"},
         "messages": [
             {

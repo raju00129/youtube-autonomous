@@ -35,8 +35,16 @@ def readiness(song: SongProject) -> dict:
         "published",
     }
     has_final = bool(getattr(song, "final_video_path", None))
-    shorts_cut = sum(1 for s in (song.shorts or []) if getattr(s, "clip_path", None)) >= 2
-    shorts_final = sum(1 for s in (song.shorts or []) if getattr(s, "final_clip_path", None)) >= 2
+    from app.services_video import active_shorts, configured_shorts_count
+
+    n_shorts = configured_shorts_count()
+    live_shorts = active_shorts(song)
+    shorts_cut = (
+        sum(1 for s in live_shorts if getattr(s, "clip_path", None)) >= n_shorts
+    )
+    shorts_final = (
+        sum(1 for s in live_shorts if getattr(s, "final_clip_path", None)) >= n_shorts
+    )
     reviewable = has_lyrics and has_music
     publishable = reviewable and has_final and bool(getattr(song, "youtube_playlist_id", None))
     can_set_time = reviewable
@@ -48,7 +56,7 @@ def readiness(song: SongProject) -> dict:
         {"key": "video", "label": "Kling visual clip (720p 16:9)", "ok": has_video},
         {
             "key": "shorts_clips",
-            "label": "2 Shorts cut from same clip",
+            "label": f"{n_shorts} Short cut from main clip" if n_shorts == 1 else f"{n_shorts} Shorts cut from same clip",
             "ok": shorts_cut,
         },
         {
@@ -58,14 +66,14 @@ def readiness(song: SongProject) -> dict:
         },
         {
             "key": "shorts_final",
-            "label": "2 Short finals mixed with audio",
+            "label": f"{n_shorts} Short final mixed with audio" if n_shorts == 1 else f"{n_shorts} Short finals mixed with audio",
             "ok": shorts_final,
         },
         {"key": "thumbnail", "label": "Thumbnail (logo + deity + title)", "ok": has_thumbnail},
         {
             "key": "shorts",
-            "label": "2 Shorts planned",
-            "ok": len(song.shorts or []) >= 2,
+            "label": f"{n_shorts} Short planned" if n_shorts == 1 else f"{n_shorts} Shorts planned",
+            "ok": len(live_shorts) >= n_shorts,
         },
         {
             "key": "playlist",
@@ -196,14 +204,6 @@ def schedule_or_publish_now(
         raise HTTPException(status_code=404, detail="Song not found")
 
     ready = readiness(song)
-    if not ready["can_set_time"]:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "message": "Need lyrics + uploaded audio before setting publish time",
-                "missing": ready["missing"],
-            },
-        )
 
     if body.publish_now:
         if not ready["publishable"]:
@@ -231,8 +231,9 @@ def schedule_or_publish_now(
 
         when = song.publish_at or datetime.now(tz=IST)
         if body.sync_shorts:
-            for short in song.shorts:
-                short.publish_at = when
+            from app.services_publish import apply_short_publish_times
+
+            apply_short_publish_times(song, when)
 
         slots = db.scalars(select(ScheduleSlot).where(ScheduleSlot.song_id == song.id)).all()
         for slot in slots:
@@ -264,21 +265,33 @@ def schedule_or_publish_now(
 
     if not body.publish_at:
         raise HTTPException(status_code=400, detail="provide publish_at or publish_now=true")
+    # Allow setting/changing publish time anytime (even before audio) so the picker sticks.
     when = body.publish_at
     if when.tzinfo is None:
         when = when.replace(tzinfo=IST)
-    song.stage = "ready_to_publish"
+    else:
+        when = when.astimezone(IST)
+    if ready["reviewable"] or song.stage in {
+        "ready_to_publish",
+        "queued_publish",
+        "final_ready",
+        "music_ready",
+    }:
+        song.stage = "ready_to_publish"
     song.publish_at = when
 
     if body.sync_shorts:
-        for short in song.shorts:
-            short.publish_at = when
+        from app.services_publish import apply_short_publish_times
 
-    # Keep linked schedule slots in sync
+        # Short 1 = main time; Short 2 = main + SHORT_STAGGER_HOURS
+        apply_short_publish_times(song, when)
+
+    # Keep linked schedule slots in sync (main publish time; stay on planned calendar day)
     slots = db.scalars(select(ScheduleSlot).where(ScheduleSlot.song_id == song.id)).all()
     for slot in slots:
         slot.publish_at = when
-        slot.status = "ready_to_publish"
+        if ready["reviewable"]:
+            slot.status = "ready_to_publish"
 
     db.commit()
     db.refresh(song)

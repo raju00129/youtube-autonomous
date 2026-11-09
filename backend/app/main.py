@@ -7,6 +7,7 @@ import redis
 from app.api.v1.router import api_router
 from app.core.config import get_settings
 from app.db import check_database
+from app.middleware.portal_auth import PortalAuthMiddleware
 from app.schema_migrate import ensure_schema
 
 settings = get_settings()
@@ -17,6 +18,8 @@ app = FastAPI(
     description="Autonomous Telugu devotional YouTube production platform",
 )
 
+# CORS outermost so preflight/401 responses still get Access-Control headers
+app.add_middleware(PortalAuthMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
@@ -31,7 +34,16 @@ app.include_router(api_router, prefix="/api/v1")
 @app.on_event("startup")
 def ensure_media_dirs() -> None:
     root = Path(settings.media_root)
-    for sub in ("temp", "logs", "cache", "music", "branding", "thumbnails", "visuals"):
+    for sub in (
+        "temp",
+        "logs",
+        "cache",
+        "music",
+        "branding",
+        "thumbnails",
+        "visuals",
+        "denoise",
+    ):
         (root / sub).mkdir(parents=True, exist_ok=True)
     ensure_schema()
 

@@ -2,22 +2,33 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import select
 
+from app.core.config import get_settings
 from app.db import get_db
 from app.models import SongProject
 from app.providers.kling_video import KlingVideoError, is_configured as kling_configured
 from app.services_final import FinalMixError, mix_final_preview
-from app.services_video import generate_visual_and_shorts
+from app.services_video import apply_manual_visual_upload, generate_visual_and_shorts
 from app.workers.tasks import visuals_generate
 
 router = APIRouter(tags=["visuals"])
+
+ALLOWED_VIDEO = {
+    "video/mp4",
+    "video/quicktime",
+    "video/webm",
+    "video/x-m4v",
+    "application/octet-stream",
+}
+ALLOWED_VIDEO_SUFFIXES = {".mp4", ".mov", ".webm", ".m4v"}
 
 
 def _load_song(db: Session, song_id: uuid.UUID) -> SongProject:
@@ -88,11 +99,73 @@ def generate_visuals_sync(song_id: uuid.UUID, db: Session = Depends(get_db)) -> 
     }
 
 
+@router.post("/songs/{song_id}/visuals/upload")
+async def upload_visual(
+    song_id: uuid.UUID,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Upload a finished 16:9 (or any) video — skips AI generation; cuts Shorts via ffmpeg."""
+    song = _load_song(db, song_id)
+    name = file.filename or "upload.mp4"
+    suffix = Path(name).suffix.lower() or ".mp4"
+    content_type = (file.content_type or "application/octet-stream").lower()
+    if content_type not in ALLOWED_VIDEO and suffix not in ALLOWED_VIDEO_SUFFIXES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported video type: {content_type} ({suffix}). Use mp4, mov, or webm.",
+        )
+
+    settings = get_settings()
+    dest_dir = Path(settings.media_root) / "visuals" / str(song.id)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    safe = re.sub(r"[^a-zA-Z0-9._-]+", "_", Path(name).stem)[:80] or "visual"
+    raw_path = dest_dir / f"manual_{uuid.uuid4().hex[:10]}_{safe}{suffix}"
+
+    data = await file.read()
+    if len(data) > settings.max_upload_bytes:
+        raise HTTPException(status_code=413, detail="File too large")
+    if len(data) < 1000:
+        raise HTTPException(status_code=400, detail="File looks empty")
+    raw_path.write_bytes(data)
+
+    try:
+        result = apply_manual_visual_upload(
+            db, song, source_path=raw_path, original_filename=name
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=400, detail=f"Could not process uploaded video: {exc}"
+        ) from exc
+
+    db.commit()
+    song = _load_song(db, song_id)
+    return {
+        "data": {
+            **result,
+            "song_id": str(song.id),
+            "stage": song.stage,
+            "video_url": f"/api/v1/songs/{song.id}/visuals/clip",
+            "shorts": [
+                {
+                    "slot_index": s.slot_index,
+                    "stage": s.stage,
+                    "clip_path": s.clip_path,
+                    "clip_url": f"/api/v1/songs/{song.id}/shorts/{s.slot_index}/clip"
+                    if s.clip_path
+                    else None,
+                }
+                for s in (song.shorts or [])
+            ],
+        }
+    }
+
+
 @router.get("/songs/{song_id}/visuals/clip")
 def get_main_clip(song_id: uuid.UUID, db: Session = Depends(get_db)) -> FileResponse:
     song = _load_song(db, song_id)
     if not song.video_clip_path:
-        raise HTTPException(status_code=404, detail="No visual clip yet — generate first")
+        raise HTTPException(status_code=404, detail="No visual clip yet — generate or upload first")
     path = Path(song.video_clip_path)
     if not path.exists():
         raise HTTPException(status_code=404, detail="Visual clip file missing on disk")

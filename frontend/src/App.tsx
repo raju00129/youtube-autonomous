@@ -1,7 +1,7 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
-
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8010";
+import DenoisePage from "./DenoisePage";
+import { API_BASE, withPortalKey } from "./portalAuth";
 
 type ReadyResponse = {
   status: string;
@@ -427,6 +427,7 @@ function SongDetail() {
   const { songId } = useParams();
   const [song, setSong] = useState<Song | null>(null);
   const [pack, setPack] = useState<SunoPack | null>(null);
+  const [title, setTitle] = useState("");
   const [lyrics, setLyrics] = useState("");
   const [style, setStyle] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -440,6 +441,7 @@ function SongDetail() {
   const [playlists, setPlaylists] = useState<YtPlaylist[]>([]);
   const [playlistPick, setPlaylistPick] = useState("");
   const [playlistHint, setPlaylistHint] = useState<string | null>(null);
+  const [publishLocal, setPublishLocal] = useState("");
 
   const pollVisualJob = useCallback(async (jobId: string) => {
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -494,8 +496,10 @@ function SongDetail() {
     if (!songRes.ok) throw new Error("Song not found");
     const songBody = (await songRes.json()) as { data: Song };
     setSong(songBody.data);
+    setTitle(songBody.data.title ?? "");
     setLyrics(songBody.data.lyrics?.body ?? "");
     setStyle(songBody.data.style_prompt ?? "");
+    setPublishLocal(toLocalInputValue(songBody.data.publish_at));
     if (songBody.data.youtube_playlist_id) {
       setPlaylistPick(songBody.data.youtube_playlist_id);
     }
@@ -533,26 +537,68 @@ function SongDetail() {
     void loadPlaylists();
   }, [loadPlaylists]);
 
-  async function saveLyrics(approve: boolean) {
+  // Auto-refresh while background Gemini lyrics are writing
+  useEffect(() => {
+    if (song?.stage !== "generating_lyrics") return;
+    const t = window.setInterval(() => {
+      void load().catch(() => undefined);
+    }, 5000);
+    return () => window.clearInterval(t);
+  }, [song?.stage, load]);
+
+  async function saveManualEdits(approve: boolean) {
     if (!songId) return;
+    const trimmedTitle = title.trim();
+    const trimmedLyrics = lyrics.trim();
+    if (!trimmedTitle) {
+      setError("Title is required.");
+      return;
+    }
     setBusy(true);
     setError(null);
     setNotice(null);
     try {
-      const res = await fetch(`${API_BASE}/api/v1/songs/${songId}/lyrics`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ body: lyrics, approve }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      if (style !== song?.style_prompt) {
-        await fetch(`${API_BASE}/api/v1/songs/${songId}`, {
+      const lyricsChanged = trimmedLyrics !== (song?.lyrics?.body ?? "").trim();
+      const styleChanged = style !== (song?.style_prompt ?? "");
+      const titleChanged = trimmedTitle !== (song?.title ?? "");
+
+      if (trimmedLyrics && (lyricsChanged || approve || styleChanged || titleChanged)) {
+        const res = await fetch(`${API_BASE}/api/v1/songs/${songId}/lyrics`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            body: lyrics,
+            approve,
+            title: trimmedTitle,
+            style_prompt: style,
+          }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+      } else if (titleChanged || styleChanged) {
+        const res = await fetch(`${API_BASE}/api/v1/songs/${songId}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ style_prompt: style }),
+          body: JSON.stringify({
+            ...(titleChanged ? { title: trimmedTitle } : {}),
+            ...(styleChanged ? { style_prompt: style } : {}),
+          }),
         });
+        if (!res.ok) throw new Error(await res.text());
+      } else if (approve && song?.lyrics) {
+        const res = await fetch(`${API_BASE}/api/v1/songs/${songId}/lyrics/approve`, {
+          method: "POST",
+        });
+        if (!res.ok) throw new Error(await res.text());
+      } else {
+        setNotice("Nothing to save — title, style, and lyrics are unchanged.");
+        return;
       }
-      setNotice(approve ? "Lyrics approved — copy Suno pack and generate." : "Lyrics saved.");
+
+      setNotice(
+        approve
+          ? "Title, style & lyrics saved and approved — copy Suno pack and generate."
+          : "Title, style & lyrics saved.",
+      );
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Save failed");
@@ -567,6 +613,20 @@ function SongDetail() {
     setNotice("Suno pack copied to clipboard.");
   }
 
+  async function copyField(label: string, text: string) {
+    const value = text.trim();
+    if (!value) {
+      setNotice(`${label} is empty — nothing to copy.`);
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(value);
+      setNotice(`${label} copied.`);
+    } catch {
+      setError(`Could not copy ${label.toLowerCase()}.`);
+    }
+  }
+
   async function regenerateLyrics() {
     if (!songId) return;
     setBusy(true);
@@ -579,7 +639,7 @@ function SongDetail() {
         body: JSON.stringify({
           topic: regenTopic || song?.notes || null,
           deity: song?.deity || null,
-          title: song?.title || null,
+          title: title.trim() || song?.title || null,
           vocal_preference: song?.vocal_preference || "m",
           music_genre: song?.music_genre || null,
         }),
@@ -587,10 +647,11 @@ function SongDetail() {
       if (!res.ok) throw new Error(await res.text());
       const body = (await res.json()) as { data: Song };
       setSong(body.data);
+      setTitle(body.data.title ?? "");
       setLyrics(body.data.lyrics?.body ?? "");
       setStyle(body.data.style_prompt ?? "");
       setNotice(
-        `New draft v${body.data.lyrics?.version ?? "?"} — lyrics & style updated. Review and approve.`,
+        `New draft v${body.data.lyrics?.version ?? "?"} — title, lyrics & style updated. Review and save/approve.`,
       );
       try {
         await load();
@@ -642,11 +703,17 @@ function SongDetail() {
           <Link to="/songs" className="text-sm text-temple hover:underline">
             ← All songs
           </Link>
-          <h1 className="mt-2 font-display text-4xl text-ink">{song.title}</h1>
+          <h1 className="mt-2 font-display text-4xl text-ink">{title || song.title}</h1>
           <p className="text-ink/60">
             Stage: <span className="font-medium text-ink">{song.stage}</span>
             {song.deity ? ` · ${song.deity}` : ""}
           </p>
+          {song.stage === "generating_lyrics" && (
+            <p className="mt-2 text-sm text-temple">
+              Gemini is writing lyrics in the background — refresh in a minute (you can create
+              other songs meanwhile).
+            </p>
+          )}
         </div>
       </div>
 
@@ -654,9 +721,37 @@ function SongDetail() {
       {notice && <p className="border border-temple/30 bg-white/50 px-4 py-3 text-temple">{notice}</p>}
 
       <section className="grid gap-4 border border-ink/10 bg-white/55 p-6">
-        <h2 className="font-display text-2xl">1. Lyrics & style</h2>
+        <h2 className="font-display text-2xl">1. Title, lyrics & style</h2>
+        <p className="text-sm text-ink/60">
+          Edit manually anytime — Save keeps your title (won&apos;t replace it with Pallavi).
+          Regenerate still drafts a fresh Gemini version you can tweak.
+        </p>
         <label className="grid gap-1 text-sm">
-          Style prompt (Suno) — auto-includes Telugu pronunciation / clear-diction tags
+          Title
+          <input
+            className="border border-ink/15 bg-white/80 px-3 py-2 text-base"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="Song title (Telugu or English)"
+          />
+        </label>
+        <label className="grid gap-1 text-sm">
+          <span className="flex items-center justify-between gap-2">
+            <span>Style prompt (Suno) — auto-includes Telugu pronunciation / clear-diction tags</span>
+            <button
+              type="button"
+              title="Copy style"
+              aria-label="Copy style"
+              disabled={!style.trim()}
+              onClick={(e) => {
+                e.preventDefault();
+                void copyField("Style", style);
+              }}
+              className="shrink-0 border border-ink/15 bg-white px-2 py-0.5 text-xs text-ink/70 hover:border-temple/40 hover:text-temple disabled:opacity-40"
+            >
+              ⧉ Copy
+            </button>
+          </span>
           <textarea
             className="min-h-20 border border-ink/15 bg-white/80 px-3 py-2 text-sm"
             value={style}
@@ -664,7 +759,22 @@ function SongDetail() {
           />
         </label>
         <label className="grid gap-1 text-sm">
-          Lyrics
+          <span className="flex items-center justify-between gap-2">
+            <span>Lyrics</span>
+            <button
+              type="button"
+              title="Copy lyrics"
+              aria-label="Copy lyrics"
+              disabled={!lyrics.trim()}
+              onClick={(e) => {
+                e.preventDefault();
+                void copyField("Lyrics", lyrics);
+              }}
+              className="shrink-0 border border-ink/15 bg-white px-2 py-0.5 text-xs text-ink/70 hover:border-temple/40 hover:text-temple disabled:opacity-40"
+            >
+              ⧉ Copy
+            </button>
+          </span>
           <textarea
             className="min-h-56 border border-ink/15 bg-white/80 px-3 py-2 font-mono text-sm"
             value={lyrics}
@@ -692,18 +802,18 @@ function SongDetail() {
           <button
             type="button"
             disabled={busy}
-            onClick={() => void saveLyrics(false)}
+            onClick={() => void saveManualEdits(false)}
             className="border border-ink/20 bg-white px-4 py-2 text-ink disabled:opacity-50"
           >
-            Save draft
+            Save title / style / lyrics
           </button>
           <button
             type="button"
             disabled={busy}
-            onClick={() => void saveLyrics(true)}
+            onClick={() => void saveManualEdits(true)}
             className="bg-temple px-4 py-2 font-medium text-white disabled:opacity-50"
           >
-            Approve lyrics
+            Save & approve
           </button>
         </div>
         {song.lyrics && (
@@ -743,7 +853,7 @@ function SongDetail() {
         <h2 className="font-display text-2xl">3. Upload finished audio</h2>
         <input
           type="file"
-          accept="audio/*,.mp3,.wav,.m4a"
+          accept="audio/*,audio/webm,video/webm,.mp3,.wav,.m4a,.ogg,.webm"
           disabled={busy}
           onChange={(e) => void onUpload(e.target.files?.[0] ?? null)}
         />
@@ -752,7 +862,7 @@ function SongDetail() {
             <p>
               Uploaded: <strong>{song.music.original_filename}</strong> ({song.music.status})
             </p>
-            <audio controls src={`${API_BASE}${song.music.download_path}`} className="w-full" />
+            <audio controls src={withPortalKey(`${API_BASE}${song.music.download_path}`)} className="w-full" />
           </div>
         )}
       </section>
@@ -760,19 +870,19 @@ function SongDetail() {
       <section className="grid gap-3 border border-ink/10 bg-white/55 p-6">
         <h2 className="font-display text-2xl">4. Visual (16:9 + Shorts 9:16)</h2>
         <p className="text-sm text-ink/65">
-          One silent <strong>16:9</strong> clip (Gemini first, Kling if quota exhausted). ffmpeg builds:
-          main looped &lt;30s 16:9, plus 2 Shorts as <strong>9:16 center-crop</strong> looped &lt;30s —
-          Charanam 1 → Short 1, Charanam 2 → Short 2. On a schedule this also runs automatically ~1h
-          before publish.
+          Prefer uploading a finished video when you already have a better clip — skips AI
+          generation. Or generate one silent <strong>16:9</strong> clip (Gemini first, Kling if
+          quota exhausted). ffmpeg builds 2 Shorts as <strong>9:16 center-crop</strong> looped
+          &lt;30s. On a schedule, auto-prep also skips generation when a clip is already present.
         </p>
         {song.visual?.clip_url ? (
           <video
             controls
-            src={`${API_BASE}${song.visual.clip_url}?v=${encodeURIComponent(song.visual.clip_path || "")}`}
+            src={withPortalKey(`${API_BASE}${song.visual.clip_url}?v=${encodeURIComponent(song.visual.clip_path || "")}`)}
             className="max-w-lg border border-ink/10"
           />
         ) : (
-          <p className="text-sm text-saffron">No visual clip yet.</p>
+          <p className="text-sm text-saffron">No visual clip yet — upload one or generate below.</p>
         )}
         {visualProgress && (
           <div className="max-w-lg space-y-2" aria-live="polite">
@@ -793,45 +903,91 @@ function SongDetail() {
             </p>
           </div>
         )}
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() =>
-            void (async () => {
-              setBusy(true);
-              setError(null);
-              setNotice(null);
-              setVisualProgress({ percent: 1, message: "Starting visual job…" });
-              try {
-                const res = await fetch(`${API_BASE}/api/v1/songs/${song.id}/visuals/generate`, {
-                  method: "POST",
-                });
-                if (!res.ok) throw new Error(await res.text());
-                const body = (await res.json()) as { data?: { job_id?: string; note?: string } };
-                const jobId = body.data?.job_id;
-                if (!jobId) throw new Error("No job_id returned from visuals/generate");
-                const result = await pollVisualJob(jobId);
-                setVisualProgress({ percent: 100, message: "Visual + Shorts ready" });
-                setNotice(
-                  (result && typeof result === "object" && "note" in result
-                    ? String((result as { note?: string }).note)
-                    : null) ?? "Visual + Shorts ready.",
-                );
-                await load();
-              } catch (err) {
-                setError(err instanceof Error ? err.message : "Visual generate failed");
-                setVisualProgress(null);
-              } finally {
-                setBusy(false);
-              }
-            })()
-          }
-          className="justify-self-start border border-ink/20 bg-white px-4 py-2 text-sm font-medium disabled:opacity-50"
-        >
-          {visualProgress && busy
-            ? `Generating… ${visualProgress.percent}%`
-            : "Generate 16:9 + cut 9:16 Shorts"}
-        </button>
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-2 border-2 border-temple bg-temple/10 px-4 py-4">
+            <p className="text-base font-semibold text-ink">Upload your own video (skip AI)</p>
+            <p className="text-xs text-ink/60">
+              Use a better finished clip (mp4 / mov / webm). We normalize to silent 16:9 and cut
+              Shorts — no Gemini/Kling generation.
+            </p>
+            <label className="inline-flex w-fit cursor-pointer items-center gap-2 bg-temple px-5 py-2.5 text-sm font-semibold text-white has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-50">
+              {busy ? "Uploading…" : "Choose video file…"}
+              <input
+                type="file"
+                accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm,.m4v"
+                disabled={busy}
+                className="sr-only"
+                onChange={(e) =>
+                  void (async () => {
+                    const file = e.target.files?.[0];
+                    e.target.value = "";
+                    if (!file) return;
+                    setBusy(true);
+                    setError(null);
+                    setNotice("Uploading video — normalizing + cutting Shorts…");
+                    setVisualProgress(null);
+                    try {
+                      const form = new FormData();
+                      form.append("file", file);
+                      const res = await fetch(
+                        `${API_BASE}/api/v1/songs/${song.id}/visuals/upload`,
+                        { method: "POST", body: form },
+                      );
+                      if (!res.ok) throw new Error(await res.text());
+                      const body = (await res.json()) as { data?: { note?: string } };
+                      setNotice(body.data?.note ?? "Video uploaded — stage is video_ready.");
+                      await load();
+                    } catch (err) {
+                      setError(err instanceof Error ? err.message : "Video upload failed");
+                      setNotice(null);
+                    } finally {
+                      setBusy(false);
+                    }
+                  })()
+                }
+              />
+            </label>
+          </div>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              void (async () => {
+                setBusy(true);
+                setError(null);
+                setNotice(null);
+                setVisualProgress({ percent: 1, message: "Starting visual job…" });
+                try {
+                  const res = await fetch(`${API_BASE}/api/v1/songs/${song.id}/visuals/generate`, {
+                    method: "POST",
+                  });
+                  if (!res.ok) throw new Error(await res.text());
+                  const body = (await res.json()) as { data?: { job_id?: string; note?: string } };
+                  const jobId = body.data?.job_id;
+                  if (!jobId) throw new Error("No job_id returned from visuals/generate");
+                  const result = await pollVisualJob(jobId);
+                  setVisualProgress({ percent: 100, message: "Visual + Shorts ready" });
+                  setNotice(
+                    (result && typeof result === "object" && "note" in result
+                      ? String((result as { note?: string }).note)
+                      : null) ?? "Visual + Shorts ready.",
+                  );
+                  await load();
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : "Visual generate failed");
+                  setVisualProgress(null);
+                } finally {
+                  setBusy(false);
+                }
+              })()
+            }
+            className="w-fit border border-ink/20 bg-white px-4 py-2 text-sm font-medium disabled:opacity-50"
+          >
+            {visualProgress && busy
+              ? `Generating… ${visualProgress.percent}%`
+              : "Or generate with AI (16:9 + Shorts)"}
+          </button>
+        </div>
       </section>
 
       <section className="grid gap-3 border border-ink/10 bg-white/55 p-6">
@@ -843,7 +999,7 @@ function SongDetail() {
         {song.thumbnail?.path ? (
           <img
             key={song.thumbnail.path}
-            src={`${API_BASE}/api/v1/songs/${song.id}/thumbnail?v=${encodeURIComponent(song.thumbnail.path)}`}
+            src={withPortalKey(`${API_BASE}/api/v1/songs/${song.id}/thumbnail?v=${encodeURIComponent(song.thumbnail.path)}`)}
             alt="YouTube thumbnail preview"
             className="max-w-lg border border-ink/10"
           />
@@ -943,7 +1099,7 @@ function SongDetail() {
           Token expired / 401?{" "}
           <a
             className="font-medium text-temple underline"
-            href={`${API_BASE}/api/v1/youtube/auth`}
+            href={withPortalKey(`${API_BASE}/api/v1/youtube/auth`)}
             target="_blank"
             rel="noreferrer"
           >
@@ -1094,7 +1250,7 @@ function SongDetail() {
             <video
               key={song.final.path || song.final.url}
               controls
-              src={`${API_BASE}${song.final.url}?v=${encodeURIComponent(song.final.path || "")}`}
+              src={withPortalKey(`${API_BASE}${song.final.url}?v=${encodeURIComponent(song.final.path || "")}`)}
               className="max-w-2xl border border-ink/10"
             />
             <div className="grid gap-3 sm:grid-cols-2">
@@ -1112,7 +1268,7 @@ function SongDetail() {
                     <video
                       key={s.final_clip_path || s.final_url}
                       controls
-                      src={`${API_BASE}${s.final_url}?v=${encodeURIComponent(s.final_clip_path || "")}`}
+                      src={withPortalKey(`${API_BASE}${s.final_url}?v=${encodeURIComponent(s.final_clip_path || "")}`)}
                       className="max-h-80 border border-ink/10"
                     />
                   </div>
@@ -1129,9 +1285,9 @@ function SongDetail() {
       <section className="grid gap-3 border border-ink/10 bg-white/55 p-6">
         <h2 className="font-display text-2xl">8. Publish anytime</h2>
         <p className="text-sm text-ink/65">
-          Requires final mix + playlist. Change time freely, or publish mid-week. Shorts follow the
-          same time. If you set a schedule and do nothing, the system auto-runs video+mix ~1h before
-          publish, then uploads at the scheduled time (Gemini video first, Kling if exhausted).
+          Requires final mix + playlist. One Short goes live with the main video (Short 2 paused).
+          If you set a time and do nothing, auto video+mix runs ~1h before publish, then uploads
+          at the scheduled time.
         </p>
         {song.pipeline && (
           <div className="border border-temple/30 bg-temple/5 px-4 py-3 text-sm text-ink/80">
@@ -1156,19 +1312,21 @@ function SongDetail() {
         )}
         <div className="flex flex-wrap items-end gap-3">
           <label className="grid gap-1 text-sm">
-            Publish at (any time)
+            Publish at (any time) — saves when you pick
             <input
               type="datetime-local"
               className="border border-ink/15 bg-white/80 px-3 py-2"
-              value={toLocalInputValue(song.publish_at)}
+              value={publishLocal}
               onChange={(e) => {
                 const v = e.target.value;
+                setPublishLocal(v); // keep picker on chosen value (don't snap back)
+                if (!v) return;
                 void (async () => {
                   const res = await fetch(`${API_BASE}/api/v1/publish/songs/${song.id}/schedule`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
-                      publish_at: v ? new Date(v).toISOString() : null,
+                      publish_at: new Date(v).toISOString(),
                       publish_now: false,
                     }),
                   });
@@ -1177,7 +1335,9 @@ function SongDetail() {
                     return;
                   }
                   setNotice("Publish time updated.");
-                  await load();
+                  setSong((prev) =>
+                    prev ? { ...prev, publish_at: new Date(v).toISOString() } : prev,
+                  );
                 })();
               }}
             />
@@ -1340,13 +1500,13 @@ function SongDetail() {
 
       {(song.shorts?.length ?? 0) > 0 && (
         <section className="grid gap-3 border border-ink/10 bg-white/55 p-6">
-          <h2 className="font-display text-2xl">10. Shorts (2) — cut from main clip</h2>
+          <h2 className="font-display text-2xl">10. Short — cut from main clip</h2>
           <p className="text-sm text-ink/65">
-            Portrait 9:16 center-crops from the same Kling 16:9 clip (ffmpeg). Charanam 1 → Short 1,
-            Charanam 2 → Short 2. Titles refresh with latest lyrics.
+            Portrait 9:16 center-crop from the main 16:9 clip (ffmpeg). One Short for now;
+            Short 2 is paused.
           </p>
           <ul className="space-y-3">
-            {song.shorts!.map((s) => (
+            {song.shorts!.filter((s) => s.slot_index <= 1).map((s) => (
               <li key={s.id} className="border border-ink/10 bg-white/70 p-3 text-sm">
                 <p className="font-medium">
                   Short {s.slot_index}: {s.title}
@@ -1356,7 +1516,7 @@ function SongDetail() {
                 {s.clip_url && (
                   <video
                     controls
-                    src={`${API_BASE}${s.clip_url}`}
+                    src={withPortalKey(`${API_BASE}${s.clip_url}`)}
                     className="mt-2 max-h-64 border border-ink/10"
                   />
                 )}
@@ -1378,7 +1538,12 @@ type ScheduleSlot = {
   publish_at?: string | null;
   title_hint?: string | null;
   status: string;
+  published?: boolean;
   song_id?: string | null;
+  song_title?: string | null;
+  song_stage?: string | null;
+  youtube_url?: string | null;
+  youtube_video_id?: string | null;
   auto_deity?: string | null;
   auto_mood?: string | null;
   suggestion?: {
@@ -1391,19 +1556,28 @@ type ScheduleSlot = {
 
 type ScheduleDay = { date: string; slots: ScheduleSlot[] };
 
+function mondayLocalISO(d = new Date()): string {
+  const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const day = x.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  x.setDate(x.getDate() + diff);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${x.getFullYear()}-${pad(x.getMonth() + 1)}-${pad(x.getDate())}`;
+}
+
+function addDaysISO(isoDate: string, days: number): string {
+  const [y, m, d] = isoDate.split("-").map(Number);
+  const x = new Date(y, m - 1, d + days);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${x.getFullYear()}-${pad(x.getMonth() + 1)}-${pad(x.getDate())}`;
+}
+
 function WeekSchedule() {
-  const navigate = useNavigate();
-  const [weekStart, setWeekStart] = useState(() => {
-    const d = new Date();
-    const day = d.getDay();
-    const diff = day === 0 ? -6 : 1 - day;
-    d.setDate(d.getDate() + diff);
-    return d.toISOString().slice(0, 10);
-  });
+  const [weekStart, setWeekStart] = useState(() => mondayLocalISO());
   const [days, setDays] = useState<ScheduleDay[]>([]);
   const [planNote, setPlanNote] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [busyId, setBusyId] = useState<string | null>(null);
+  const [busyIds, setBusyIds] = useState<Record<string, boolean>>({});
 
   const load = useCallback(async () => {
     const ensure = await fetch(`${API_BASE}/api/v1/schedule/weeks/ensure`, {
@@ -1436,6 +1610,9 @@ function WeekSchedule() {
     void load().catch((err) => setError(err instanceof Error ? err.message : "Load failed"));
   }, [load]);
 
+  const [saveNotice, setSaveNotice] = useState<string | null>(null);
+  const weekEnd = addDaysISO(weekStart, 6);
+
   async function saveHint(slotId: string, title_hint: string) {
     await fetch(`${API_BASE}/api/v1/schedule/slots/${slotId}`, {
       method: "PATCH",
@@ -1444,8 +1621,34 @@ function WeekSchedule() {
     });
   }
 
+  async function savePublishAt(slotId: string, localValue: string) {
+    if (!localValue) return;
+    setError(null);
+    setSaveNotice(null);
+    const res = await fetch(`${API_BASE}/api/v1/schedule/slots/${slotId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        publish_at: new Date(localValue).toISOString(),
+      }),
+    });
+    if (!res.ok) {
+      setError(await res.text());
+      return;
+    }
+    const chosenDay = localValue.slice(0, 10);
+    const chosenWeek = mondayLocalISO(new Date(`${chosenDay}T12:00:00`));
+    setSaveNotice(`Publish time saved for ${chosenDay}.`);
+    if (chosenWeek !== weekStart) {
+      // Jump the week picker so the slot stays visible after a date change
+      setWeekStart(chosenWeek);
+      return;
+    }
+    await load();
+  }
+
   async function materialize(slotId: string) {
-    setBusyId(slotId);
+    setBusyIds((prev) => ({ ...prev, [slotId]: true }));
     setError(null);
     try {
       const res = await fetch(`${API_BASE}/api/v1/schedule/slots/${slotId}/materialize`, {
@@ -1454,13 +1657,25 @@ function WeekSchedule() {
         body: JSON.stringify({ generate_lyrics: true, approve_lyrics: false }),
       });
       if (!res.ok) throw new Error(await res.text());
-      const body = (await res.json()) as { data: { song_id: string } };
+      const body = (await res.json()) as {
+        data: { song_id: string; note?: string; lyrics_pending?: boolean };
+      };
+      setSaveNotice(
+        body.data.note ||
+          (body.data.lyrics_pending
+            ? "Song created — lyrics generating in background. You can create another now."
+            : "Song created."),
+      );
       await load();
-      navigate(`/songs/${body.data.song_id}`);
+      // Stay on schedule so parallel creates keep working (Open song from the slot card).
     } catch (err) {
       setError(err instanceof Error ? err.message : "Materialize failed");
     } finally {
-      setBusyId(null);
+      setBusyIds((prev) => {
+        const next = { ...prev };
+        delete next[slotId];
+        return next;
+      });
     }
   }
 
@@ -1472,17 +1687,49 @@ function WeekSchedule() {
         <p className="max-w-2xl text-ink/70">{planNote}</p>
       </header>
 
-      <label className="grid max-w-xs gap-1 text-sm">
-        Week (any date in the week)
-        <input
-          type="date"
-          className="border border-ink/15 bg-white/80 px-3 py-2"
-          value={weekStart}
-          onChange={(e) => setWeekStart(e.target.value)}
-        />
-      </label>
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="grid gap-1 text-sm">
+          Week (pick any day in that week)
+          <input
+            type="date"
+            className="border border-ink/15 bg-white/80 px-3 py-2"
+            value={weekStart}
+            onChange={(e) => setWeekStart(mondayLocalISO(new Date(`${e.target.value}T12:00:00`)))}
+          />
+        </label>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            className="border border-ink/20 bg-white px-3 py-2 text-sm"
+            onClick={() => setWeekStart(addDaysISO(weekStart, -7))}
+          >
+            ← Prev week
+          </button>
+          <button
+            type="button"
+            className="border border-ink/20 bg-white px-3 py-2 text-sm"
+            onClick={() => setWeekStart(mondayLocalISO())}
+          >
+            This week
+          </button>
+          <button
+            type="button"
+            className="border border-ink/20 bg-white px-3 py-2 text-sm"
+            onClick={() => setWeekStart(addDaysISO(weekStart, 7))}
+          >
+            Next week →
+          </button>
+        </div>
+        <p className="w-full text-sm text-ink/65">
+          Showing week <strong>{weekStart}</strong> → <strong>{weekEnd}</strong> (Mon–Sun). Use Next
+          week to see later dates (e.g. 2 Nov).
+        </p>
+      </div>
 
       {error && <p className="border border-saffron/40 bg-white/50 px-4 py-3 text-saffron">{error}</p>}
+      {saveNotice && (
+        <p className="border border-temple/30 bg-white/50 px-4 py-3 text-temple">{saveNotice}</p>
+      )}
 
       <ul className="space-y-6">
         {days.map((day) => {
@@ -1497,51 +1744,78 @@ function WeekSchedule() {
               </p>
               <div className="grid gap-3 md:grid-cols-2">
                 {day.slots.map((slot) => (
-                  <div key={slot.id} className="grid gap-2 border border-ink/10 bg-white/80 p-3">
-                    <p className="font-medium text-ink">
+                  <div
+                    key={slot.id}
+                    className={`relative grid gap-2 border p-3 ${
+                      slot.published
+                        ? "border-temple/40 bg-temple/5"
+                        : "border-ink/10 bg-white/80"
+                    }`}
+                  >
+                    {slot.published && (
+                      <div className="pointer-events-none absolute right-2 top-2 rotate-[-8deg] border-2 border-temple px-2 py-0.5 font-display text-xs font-bold tracking-wider text-temple opacity-90">
+                        PUBLISHED
+                      </div>
+                    )}
+                    <p className="font-medium text-ink pr-20">
                       {slot.daypart_label ?? slot.daypart ?? "slot"} ·{" "}
                       {slot.auto_deity ?? slot.suggestion?.deity ?? "—"} · 1 song → 2 Shorts
                     </p>
+                    {slot.song_title && (
+                      <p className="text-sm text-ink/70 line-clamp-2">{slot.song_title}</p>
+                    )}
                     <input
                       className="w-full border border-ink/15 bg-white px-3 py-2 text-sm"
                       defaultValue={slot.title_hint ?? ""}
                       placeholder={`${slot.daypart ?? "slot"} title hint`}
                       onBlur={(e) => void saveHint(slot.id, e.target.value)}
+                      disabled={!!slot.published}
                     />
                     <label className="grid gap-1 text-xs text-ink/60">
-                      Publish time (anytime)
+                      Publish time (anytime) — saves when you pick
                       <input
+                        key={`${slot.id}-${slot.publish_at ?? "empty"}`}
                         type="datetime-local"
                         className="border border-ink/15 bg-white px-2 py-1.5 text-sm"
                         defaultValue={toLocalInputValue(slot.publish_at)}
-                        onBlur={(e) => {
+                        disabled={!!slot.published}
+                        onChange={(e) => {
                           if (!e.target.value) return;
-                          void fetch(`${API_BASE}/api/v1/schedule/slots/${slot.id}`, {
-                            method: "PATCH",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({
-                              publish_at: new Date(e.target.value).toISOString(),
-                            }),
-                          });
+                          void savePublishAt(slot.id, e.target.value);
                         }}
                       />
                     </label>
-                    <p className="text-xs text-ink/50">{slot.status}</p>
-                    {slot.song_id ? (
+                    <p className="text-xs text-ink/50">
+                      {slot.published ? "published" : slot.status}
+                      {slot.song_stage ? ` · song: ${slot.song_stage}` : ""}
+                    </p>
+                    {slot.published && slot.youtube_url ? (
+                      <a
+                        href={slot.youtube_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="bg-temple px-3 py-2 text-center text-sm font-medium text-white"
+                      >
+                        Watch on YouTube
+                      </a>
+                    ) : slot.song_id ? (
                       <Link
                         to={`/songs/${slot.song_id}`}
                         className="bg-temple px-3 py-2 text-center text-sm font-medium text-white"
                       >
                         Open song
+                        {slot.song_stage === "generating_lyrics" || slot.status === "song_created"
+                          ? " (lyrics may still be writing)"
+                          : ""}
                       </Link>
                     ) : (
                       <button
                         type="button"
-                        disabled={busyId === slot.id}
+                        disabled={!!busyIds[slot.id]}
                         onClick={() => void materialize(slot.id)}
                         className="bg-ink px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
                       >
-                        {busyId === slot.id ? "Creating…" : "Create song + 2 Shorts"}
+                        {busyIds[slot.id] ? "Starting…" : "Create song + 2 Shorts"}
                       </button>
                     )}
                   </div>
@@ -1711,13 +1985,14 @@ function ReadyQueue() {
                     </div>
                     <div className="flex flex-col gap-2">
                       <label className="grid gap-1 text-xs">
-                        Any publish time
+                        Any publish time — saves when you pick
                         <input
+                          key={`${song.id}-${song.publish_at ?? "empty"}`}
                           type="datetime-local"
                           className="border border-ink/15 px-2 py-1.5 text-sm"
                           defaultValue={toLocalInputValue(song.publish_at)}
-                          disabled={!song.readiness.can_set_time || busyId === song.id}
-                          onBlur={(e) => {
+                          disabled={busyId === song.id}
+                          onChange={(e) => {
                             if (!e.target.value) return;
                             void schedule(song.id, {
                               publish_at: new Date(e.target.value).toISOString(),
@@ -1808,7 +2083,7 @@ function BrandingPage() {
         <div className="space-y-2">
           <p className="text-sm text-ink/60">Current: {filename}</p>
           <img
-            src={`${API_BASE}/api/v1/branding/logo?v=${bust}`}
+            src={withPortalKey(`${API_BASE}/api/v1/branding/logo?v=${bust}`)}
             alt="Channel logo"
             className="max-h-40 border border-ink/10 bg-white p-3"
           />
@@ -1838,6 +2113,9 @@ export default function App() {
           <Link to="/branding" className="text-ink/70 hover:text-ink">
             Logo
           </Link>
+          <Link to="/denoise" className="text-ink/70 hover:text-ink">
+            Noise remove
+          </Link>
         </div>
       </nav>
       <Routes>
@@ -1847,6 +2125,7 @@ export default function App() {
         <Route path="/songs" element={<SongList />} />
         <Route path="/songs/:songId" element={<SongDetail />} />
         <Route path="/branding" element={<BrandingPage />} />
+        <Route path="/denoise" element={<DenoisePage />} />
       </Routes>
     </div>
   );

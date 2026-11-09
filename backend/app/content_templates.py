@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from app.lyrics_sections import charanam_hook, extract_charanams, extract_sections
+from app.lyrics_sections import charanam_hook, extract_sections
 
 
 CHANNEL_HANDLE = "Ragam Spiritual Telugu"
@@ -42,15 +42,20 @@ def fill_youtube_longform(
     mood: str | None,
     lyrics_excerpt: str | None = None,
     lyrics_full: str | None = None,
+    lock_title: bool = False,
 ) -> dict[str, str]:
     """Premium YouTube package in the Narasimha-reference style — always regenerate."""
     deity_bit = (deity or "Divine").strip()
     sections = extract_sections(lyrics_full or lyrics_excerpt)
-    # ALWAYS prefer latest Pallavi as the Telugu title (keeps thumb + YT in sync with lyrics)
-    pallavi_line = _first_line(sections.get("pallavi") or "")
-    telugu = _telugu_hook_title(pallavi_line or title, max_chars=48)
-    if not telugu or telugu == "తెలుగు భక్తి గీతం":
+    if lock_title and (title or "").strip():
+        # Manual title edit — do not replace with Pallavi
         telugu = _telugu_hook_title(title, max_chars=48)
+    else:
+        # Prefer latest Pallavi as the Telugu title (keeps thumb + YT in sync with lyrics)
+        pallavi_line = _first_line(sections.get("pallavi") or "")
+        telugu = _telugu_hook_title(pallavi_line or title, max_chars=48)
+        if not telugu or telugu == "తెలుగు భక్తి గీతం":
+            telugu = _telugu_hook_title(title, max_chars=48)
 
     # YouTube title max 100
     yt_title = f"{telugu} | Powerful Telugu Devotional Song | {CHANNEL_HANDLE}"
@@ -84,8 +89,7 @@ With majestic Telugu Carnatic vocals, sacred shloka chanting, temple bells, mrid
 - {highlights[2]}
 - శక్తివంతమైన తెలుగు భక్తి సాహిత్యం
 - గంభీరమైన సంగీతం, భక్తిభావం
-{f"- {topic_line}" if topic_line else ""}
-{f"- Seasonal mood: {mood_line}" if mood_line else ""}
+{f"- {topic_line}" if topic_line and "Seasonal mood" not in topic_line and "Kartika" not in topic_line and "Deepavali" not in topic_line else ""}
 
 🙏 శ్రీ {deity_bit} వారి కృప అందరిపై ఉండాలని ప్రార్థిస్తున్నాము.
 
@@ -140,16 +144,22 @@ def fill_shorts_pair(
     youtube_title: str | None = None,
     youtube_description: str | None = None,
     charanams: list[str] | None = None,
+    count: int = 1,
 ) -> list[dict[str, Any]]:
-    """Two Shorts from SAME 16:9 main clip (ffmpeg 9:16 center crop).
+    """Shorts metadata from Pallavi hook (visual/audio cut separately).
 
-    Short 1 ↔ Charanam 1, Short 2 ↔ Charanam 2. Each Short visual loops to <30s.
+    count=1 → Short 1 only (current default). count=2 → Short 1 + Short 2.
+    ``charanams`` arg kept for callers; we prefer Pallavi text from lyrics when
+    provided as first verse / title.
     """
+    n_shorts = max(1, min(2, int(count or 1)))
     deity_bit = deity or "Divine"
     telugu = _telugu_hook_title(title or youtube_title, max_chars=48)
     verses = list(charanams or [])
-    while len(verses) < 2:
-        verses.append(telugu)
+    # Prefer first verse as Pallavi body when supplied; else title hook
+    pallavi_body = (verses[0].strip() if verses else "") or telugu
+    while len(verses) < n_shorts:
+        verses.append(pallavi_body)
 
     link_line = (
         f"\n\n▶ Full song: {main_url}"
@@ -158,10 +168,11 @@ def fill_shorts_pair(
     )
 
     shorts: list[dict[str, Any]] = []
-    for n in (1, 2):
-        verse = verses[n - 1].strip()
+    for n in range(1, n_shorts + 1):
+        # Always Pallavi for Short copy (hook/chorus) — not Charanam
+        verse = pallavi_body
         hook = charanam_hook(verse, max_chars=160)
-        suffix = f" | Charanam {n}"
+        suffix = " | Pallavi"
         core = telugu[: max(1, 100 - len(suffix))]
         shorts.append(
             {
@@ -169,12 +180,13 @@ def fill_shorts_pair(
                 "title": f"{core}{suffix}",
                 "hook": hook,
                 "description": (
-                    f"🙏 **Charanam {n}** — {telugu}\n\n{verse[:900]}\n\n"
+                    f"🙏 **Pallavi** — {telugu}\n\n{verse[:900]}\n\n"
                     f"Full song on {CHANNEL_HANDLE}."
                     f"{link_line}\n\n#Shorts #TeluguDevotional #{deity_bit.replace(' ', '')} "
                     f"#RagamSpiritualTelugu"
                 ),
-                "charanam_index": n,
+                "section": "pallavi",
+                "charanam_index": n,  # legacy field; audio now uses Pallavi
                 "charanam_text": verse[:1200],
                 "source": "ffmpeg_center_crop_9x16_loop_lt30s",
             }
@@ -190,8 +202,12 @@ def sync_song_publish_copy(
     topic: str | None = None,
     mood: str | None = None,
     refresh_shorts: bool = True,
+    lock_title: bool = False,
 ) -> dict[str, str]:
-    """Always refresh song.title + YouTube package + Shorts copy from latest lyrics."""
+    """Refresh YouTube package + Shorts copy from latest lyrics.
+
+    When lock_title=True, keep the manual/gemini title instead of Pallavi.
+    """
     seed_title = (gemini_title or song.title or "").strip()
     meta = fill_youtube_longform(
         title=seed_title,
@@ -200,6 +216,7 @@ def sync_song_publish_copy(
         mood=mood or getattr(song, "visual_style", None),
         lyrics_excerpt=(lyrics or "")[:500],
         lyrics_full=lyrics,
+        lock_title=lock_title,
     )
     song.title = meta["title"]
     song.youtube_title = meta["youtube_title"]
@@ -207,14 +224,16 @@ def sync_song_publish_copy(
     song.youtube_tags = meta["youtube_tags"]
 
     if refresh_shorts and getattr(song, "shorts", None) is not None:
-        charanams = extract_charanams(lyrics, limit=2)
+        # Short copy/audio always from Pallavi (hook), not Charanam
+        sections = extract_sections(lyrics)
+        pallavi = (sections.get("pallavi") or meta["title"] or "").strip()
         defs = fill_shorts_pair(
             title=meta["title"],
             deity=song.deity,
             main_url=getattr(song, "youtube_url", None),
             youtube_title=meta["youtube_title"],
             youtube_description=meta["youtube_description"],
-            charanams=charanams,
+            charanams=[pallavi] if pallavi else None,
         )
         by_slot = {s.slot_index: s for s in (song.shorts or [])}
         for short_def in defs:

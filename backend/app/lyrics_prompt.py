@@ -3,6 +3,96 @@
 from __future__ import annotations
 
 
+SONG_FORM_BLOCK = """
+MANDATORY SONG FORM (premium Rama-style keerthana arc — follow this shape exactly)
+Use ONLY English bracket tags like [Pallavi], [Anupallavi], [Charanam 1].
+FORBIDDEN in the lyrics body (Suno will sing them — never output these):
+- Telugu section headers with dandas: ॥ పల్లవి ॥, ॥ అనుపల్లవి ॥, ॥ చరణం ॥, ॥ శ్లోకం ॥, etc.
+- Any non-English section title lines. Tags must be English [Name] only.
+
+[Opening Hook]
+… 3–5 short nama-rich lines. Immediate {vocal_label} solo, a cappella feel —
+NO orchestra yet. Pure voice calling the deity (e.g. రామా! రఘురామా! style for that deity).
+Urgent, sacred, congregation-ready. Different from the Pallavi (shorter nama cascade).
+
+[Orchestra Enter]
+… Write ONLY this single cue line (no sung lyrics here):
+Full Carnatic Orchestra Enters
+
+[Pallavi]
+… 3–4 short melodic lines. Sacred HOOK / repeating chorus. Nama-rich, deep Telugu,
+singable; rhyme or assonance OK. This is the main refrain of the song.
+
+[Anupallavi]
+… 3–4 lines that lift from the Pallavi — guna / leela / karuna in elevated register.
+
+[Pallavi]
+… REPEAT the SAME Pallavi text again (do not rewrite).
+
+[Slokam]
+… 1 short ORIGINAL Sanskrit or Sanskritised-Telugu sloka (2–4 lines / one couplet)
+praising THIS deity. Soft chant break. Not copied from famous stotras.
+
+[Sanskrit Chant Cue]
+… Write ONLY this single cue line (no new sung lyrics here):
+Deep Sanskrit Chant – Traditional {vocal_label} Voice
+
+[Pallavi]
+… REPEAT the SAME Pallavi text again.
+
+[Charanam 1]
+… 6–8 deep poetic lines (guna, leela, karuna, sharanu). Traditional bhakti Telugu —
+never prosaic speech. May use short stanza groups (4+4).
+
+[Pallavi]
+… REPEAT the SAME Pallavi text again.
+
+[Charanam 2]
+… 6–8 new deep poetic lines; return naturally toward Pallavi mood.
+
+[Pallavi]
+… REPEAT the SAME Pallavi text again (closing / ముగింపు chorus — same words).
+
+[Grand Chorus]
+… 3–5 short nama sankirtana lines — grand congregational close
+(e.g. జయ జయ …! style for THIS deity). Climactic, joyful, temple-hall energy.
+Not a copy of the Pallavi; a final nama burst that seals the song.
+
+HARD RULES
+1. Pallavi text must appear at least 4 times with the EXACT SAME words every time.
+2. Opening Hook is NOT the Pallavi — it is a shorter a-cappella nama cascade before orchestra.
+3. Grand Chorus is NOT a fifth Pallavi — it is a closing jaya/nama burst.
+4. Include [Orchestra Enter] and [Sanskrit Chant Cue] exactly as cue lines (English OK there).
+5. Sung lyric lines MUST be Telugu script (Slokam may be Sanskrit). Section tags and cue lines are English only.
+6. NEVER write ॥ … ॥ Telugu headers — Suno sings them as lyrics. Use [Pallavi] etc. only.
+7. Charanams = traditional bhakti poetry. Ban modern slang and colloquial Telugu.
+8. Original only — no copyrighted film lyrics; no verbatim Annamayya/Tyagaraja.
+9. Keep lines short–medium for singing; keep WORD CHOICE deep and traditional.
+10. Self-check: if any line sounds like everyday talk, rewrite in classical temple diction.
+""".strip()
+
+
+UNIQUENESS_BLOCK = """
+UNIQUENESS (critical — channel must not sound like the same song every day)
+- Invent a FRESH angle for THIS draft. Do not default to a generic “morning wake-up / prabhata seva” template.
+- Pick ONE distinct poetic focus and stay with it (examples — choose something NEW, not a list dump):
+  leela scene, specific nama/guna, karuna plea, temple sthala mood, river/mountain abode,
+  vibhuti-bilva-tulasi seva detail, dance/nataraja energy, cool moonlight, inner silence,
+  sharanagati, guru-parampara gratitude, family lamp-row devotion, protective ugra-karuna, etc.
+- Title MUST feel new — not a near-clone of recent channel titles. Prefer vivid, specific Telugu titles.
+- Pallavi must NOT recycle stock openings like “ప్రభాత సమయాన…”, “ప్రాభాత సమయే…”, “ఉదయకాల…శివా”,
+  or the same “లింగార్చన + ఓం నమః శివాయ + కాపాడుము” combo every Shiva song.
+- FORBIDDEN cookie-cutter patterns unless the topic EXPLICITLY demands that exact scene:
+  - Starting every morning song with ప్రభాత/ప్రాభాత/ఉదయం wake-up framing
+  - Same 3–4 nama lines reshuffled as Pallavi across songs
+  - Charanams that only say “you protect us / we surrender” with no fresh imagery
+- Even if topic mentions “morning” or “aarti”, find a NEW metaphor (conch echo, cool stone floor,
+  bilva fragrance, first lamp spark, silent mandapam before crowd — not “prabhata samayam” again).
+- Vary rhyme/assonance shapes and line lengths vs a typical previous draft.
+- Self-check: if this song could be mistaken for yesterday’s Shiva/morning song after changing 3 words, REWRITE.
+""".strip()
+
+
 def build_lyrics_prompt(
     *,
     title: str | None,
@@ -15,14 +105,16 @@ def build_lyrics_prompt(
     previous_lyrics: str | None = None,
     previous_style: str | None = None,
     variation_seed: str | None = None,
+    avoid_echo: str | None = None,
 ) -> str:
     vocal_label = "female" if vocal == "f" else "male"
+    seed = variation_seed or "fresh"
     regen = ""
     if regenerate or previous_lyrics:
         regen = f"""
 REGENERATE (mandatory — NEW draft, not a polish)
-- Variation seed: {variation_seed or "regen"}
-- Write a DISTINCTLY different song: new Pallavi, new Slokam, new Charanam imagery.
+- Variation seed: {seed}
+- Write a DISTINCTLY different song: new Opening Hook, new Pallavi, new Slokam, new Charanams, new Grand Chorus.
 - Do NOT reuse lines or the same Pallavi from the previous draft.
 - Also write a NEW style_prompt with a DIFFERENT tempo/BPM/colour than before.
 Previous style (DO NOT copy):
@@ -32,8 +124,18 @@ Previous lyrics (DO NOT copy):
 {(previous_lyrics or "(none)")[:1800]}
 """
 
+    echo = ""
+    if avoid_echo and avoid_echo.strip():
+        echo = f"""
+AVOID ECHOING THESE RECENT CHANNEL SONGS (do not reuse titles, Pallavi lines, or near-paraphrases):
+{avoid_echo.strip()[:2200]}
+"""
+
+    form = SONG_FORM_BLOCK.format(vocal_label=vocal_label)
+
     return f"""You are a senior Telugu keerthana / bhajan lyricist for YouTube channel "Ragam Spiritual".
 Write ORIGINAL, temple-grade song lyrics in Telugu script for Suno custom mode — in the DEPTH of traditional Carnatic / bhakti poetry, NOT everyday speech.
+Variation seed for uniqueness: {seed}
 
 LANGUAGE REGISTER (critical — failure if violated)
 - Sung lines MUST be Telugu script (తెలుగు). Never transliteration-only; never Hindi Devanagari for sung lines.
@@ -63,64 +165,36 @@ BRIEF
 - Topic / mood: {topic or "peaceful traditional temple devotion"}
 - Lead vocal: {vocal_label}
 - Music direction hint: {music_genre or "traditional Telugu Carnatic-devotional bhajan"}
+- Write a beautiful timeless deity song. Do NOT force calendar festivals or month names (Kartika masam, Deepavali, Navaratri, etc.) unless the topic explicitly asks for that festival.
+- Morning / daypart is ONLY a light mood hint — do NOT force a Suprabhata / ప్రభాత-సమయం song every time.
 {regen}
+{echo}
 
-MANDATORY SONG FORM (classic keerthana — Pallavi is the repeating chorus)
-Use these tags EXACTLY:
+{UNIQUENESS_BLOCK}
 
-[Pallavi]
-… 2–4 short melodic lines. Sacred HOOK / chorus. Nama-rich, deep Telugu, singable.
-
-[Anupallavi]
-… 2–4 lines that lift from the Pallavi in the same elevated register.
-
-[Pallavi]
-… REPEAT the SAME Pallavi text again (do not rewrite).
-
-[Slokam]
-… 1 short original Sanskrit or Sanskritised-Telugu sloka (2–4 lines).
-
-[Pallavi]
-… REPEAT the SAME Pallavi text again.
-
-[Charanam 1]
-… 4–6 deep poetic lines (guna, leela, karuna, sharanu).
-
-[Pallavi]
-… REPEAT the SAME Pallavi text again.
-
-[Charanam 2]
-… 4–6 new deep poetic lines.
-
-[Pallavi]
-… REPEAT the SAME Pallavi text again (final chorus).
-
-HARD RULES
-1. Pallavi text must appear at least 4 times with the SAME words every time.
-2. Pallavi must sound like a sacred song refrain — not dry word stacks or spoken slogans.
-3. Charanams = traditional bhakti poetry. Ban modern slang and colloquial Telugu.
-4. Exactly one [Slokam] block as specified.
-5. Original only — no copyrighted film lyrics; no verbatim Annamayya/Tyagaraja.
-6. Keep lines short–medium for singing; keep WORD CHOICE deep and traditional.
-7. Self-check: if any line sounds like everyday talk, rewrite in classical temple diction.
+{form}
 
 STYLE_PROMPT (English, for Suno — MUST match THESE lyrics)
-Decide musical energy from the lyrics:
-- peaceful / meditative / aarti / surrender → slow ≈60–75 BPM
-- graceful Devi / Lakshmi → slow–medium ≈75–90 BPM
-- joyful nama sankirtana → medium ≈90–105 BPM
-- Hanuman courage / protection → medium–brisk ≈100–115 BPM
-- morning Suprabhata / Surya → medium bright
-
-Then write style_prompt as comma-separated tags:
+Decide musical energy from the lyrics, then write comma-separated tags that include this arc:
+- opening: a cappella {vocal_label} solo nama hook, no instruments at first
+- then full Carnatic orchestra enters under Pallavi
+- brief deep Sanskrit chant break at Slokam
+- grand congregational chorus finale
+Also include:
 - traditional Telugu Carnatic keerthana / temple bhajan only (no film, EDM, pop)
 - MUST include: authentic Telugu language vocals, native Telugu pronunciation, crystal clear Telugu diction, perfect Telugu enunciation, no accent issues, singable Telugu syllables
 - {vocal_label} native Telugu Carnatic/bhajan vocalist, classical gamakas, steady shruti
 - tanpura; mridangam/manjira intensity matching energy
 - instruments matching deity mood
 - EXPLICIT tempo e.g. "slow 68 BPM" OR "medium 96 BPM"
-- temple mandapam reverb; Pallavi chorus repeats; brief sloka chant break
+- temple mandapam reverb; Pallavi chorus repeats; brief sloka chant break; grand nama finale
 - studio-quality vocal take, no mumbled words, lyrics fully intelligible in Telugu
+Tempo guide:
+- peaceful / meditative / aarti / surrender → slow ≈60–75 BPM
+- graceful Devi / Lakshmi → slow–medium ≈75–90 BPM
+- joyful nama sankirtana → medium ≈90–105 BPM
+- Hanuman courage / protection → medium–brisk ≈100–115 BPM
+- morning Suprabhata / Surya → medium bright
 Max ~650 characters; no quotes inside.
 
 Also set:

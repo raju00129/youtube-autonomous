@@ -32,16 +32,26 @@ def provider_status() -> dict:
                 "resolution": settings.kling_video_resolution,
                 "aspect_ratio": settings.kling_video_aspect_ratio,
                 "audio": settings.kling_video_audio or "off",
-                "via": "gemini_then_kling_no_audio",
+                "via": "scenes_stills_animate_ffmpeg",
+                "pipeline": getattr(settings, "video_pipeline", "scenes"),
+                "scene_count": getattr(settings, "video_scene_count", 12),
+                "scene_clip_sec": getattr(settings, "video_scene_clip_sec", 8),
+                "scene_animate": getattr(settings, "video_scene_animate", "kenburns"),
                 "prep_lead_minutes": settings.prep_lead_minutes,
+                "stills_ladder": "gemini→kling→cursor→thumb_kenburns",
                 "cost_hint": (
-                    "VIDEO_PROVIDER=auto: Gemini first, Kling 4.0 on quota/fail; "
+                    "VIDEO_PIPELINE=scenes: 10–15 hero stills → Ken Burns/i2v → "
+                    "FFmpeg fades (not dozens of AI videos); "
+                    "stills Gemini→Kling→Cursor→thumbnail Ken Burns; "
+                    "singleshot fallback Gemini→Kling→Ken Burns; "
                     f"auto prep {settings.prep_lead_minutes}m before publish_at"
                 ),
                 "shorts": (
-                    "ffmpeg 9:16 CENTER crop from same 16:9 clip; "
-                    "loop each Short <30s; Charanam 1→Short1, Charanam 2→Short2"
+                    f"SHORTS_COUNT={getattr(settings, 'shorts_count', 1)} — "
+                    "currently one Short (9:16 crop from main video); "
+                    "Short 2 paused for later"
                 ),
+                "shorts_count": getattr(settings, "shorts_count", 1),
             },
             "youtube": {
                 "connected": yt_status.get("connected"),
@@ -50,18 +60,20 @@ def provider_status() -> dict:
             "notes": {
                 "llm": f"Gemini lyrics ({settings.gemini_llm_model}) — LLM_PROVIDER={settings.llm_provider}",
                 "thumbnails": (
-                    f"Primary: Gemini Image ({settings.gemini_image_model}) ultra-premium still "
-                    f"(provider={settings.thumbnail_image_provider}); "
-                    "Kling Omni fallback; 3D Telugu + logo stamped locally "
-                    "(AI cannot paint real Telugu)"
+                    f"Ladder: Gemini ({settings.gemini_image_model}) → Kling Omni → Cursor GenerateImage "
+                    f"(provider hint={settings.thumbnail_image_provider}); "
+                    "3D Telugu + logo stamped locally (AI cannot paint real Telugu)"
                 ),
                 "music": "Primary: manual Suno Pro upload. Optional Mureka API if configured.",
                 "video": (
-                    f"VIDEO_PROVIDER={settings.video_provider}: Gemini "
-                    f"({settings.gemini_video_model}) → Kling ({settings.kling_video_model}) @ "
-                    f"{settings.kling_video_resolution}, audio=off; "
-                    f"auto video+mix {settings.prep_lead_minutes}m before publish_at; "
-                    "auto YouTube at publish_at (Publish now still works)"
+                    f"VIDEO_PIPELINE={getattr(settings, 'video_pipeline', 'scenes')}: "
+                    f"{getattr(settings, 'video_scene_count', 12)} hero stills "
+                    "(Gemini→Kling→Cursor→thumbnail Ken Burns) → "
+                    f"animate={getattr(settings, 'video_scene_animate', 'kenburns')} → "
+                    "FFmpeg transitions + music mux; "
+                    f"fallback singleshot VIDEO_PROVIDER={settings.video_provider} "
+                    f"(Gemini→Kling→Ken Burns) @ {settings.kling_video_resolution}; "
+                    f"auto prep {settings.prep_lead_minutes}m before publish_at"
                 ),
                 "youtube": "Connected when OAuth token present",
             },

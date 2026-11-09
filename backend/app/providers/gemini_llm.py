@@ -70,6 +70,8 @@ def generate_lyrics(
     regenerate: bool = False,
     previous_lyrics: str | None = None,
     previous_style: str | None = None,
+    avoid_echo: str | None = None,
+    variation_seed: str | None = None,
 ) -> dict[str, Any]:
     settings = get_settings()
     if not settings.gemini_api_key.strip():
@@ -89,7 +91,8 @@ def generate_lyrics(
         regenerate=regenerate,
         previous_lyrics=previous_lyrics,
         previous_style=previous_style,
-        variation_seed=f"{int(time.time())}-{regenerate}",
+        variation_seed=variation_seed or f"{int(time.time())}-{regenerate}",
+        avoid_echo=avoid_echo,
     )
 
     primary = (settings.gemini_llm_model or "gemini-3.8-flash").strip()
@@ -117,7 +120,7 @@ def generate_lyrics(
         },
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {
-            "temperature": 0.95 if regenerate else 0.8,
+            "temperature": 1.0 if regenerate else 0.92,
             "responseMimeType": "application/json",
             "responseSchema": LYRICS_SCHEMA,
         },

@@ -85,44 +85,197 @@ def _section(lyrics: str, name: str) -> str:
 
 
 def _deity_visual(deity: str | None) -> str:
+    """Classical murti / shastra ideal — NOT a drama human actor."""
     key = (deity or "").lower()
     table = {
         "narasimha": (
-            "Ugra Narasimha — fierce lion-headed Vishnu avatar, roaring mouth, glowing eyes, "
-            "muscular golden body, smashing stone pillars, cinematic mythological movie energy"
+            "Ugra Narasimha murti ideal — lion head, four arms, sudarshana and chakra, "
+            "divine aura, Ahobilam-style sanctum, NOT a human actor in makeup"
         ),
         "hanuman": (
-            "Veera Hanuman — powerful flying vanara warrior, golden crown, orange dhoti, "
-            "gada trailing energy, ocean or sky leap, Adipurush / Hanuman film CGI quality"
+            "Anjaneya murti ideal — vanara face with serene bhakti eyes, gada, "
+            "orange silk, temple garbhagriha darshan look, NOT a CGI film warrior-human hybrid"
         ),
         "lakshmi": (
-            "Goddess Lakshmi — four arms, seated on blooming pink lotus, gold coins cascading, "
-            "green-red silk saree, ornate crown, temple diyas, prosperity radiance"
+            "Sri Lakshmi murti ideal — four arms, padma, gold ornaments, seated on lotus, "
+            "South Indian temple idol grace, NOT a fashion model / actress face"
         ),
         "shiva": (
-            "Lord Shiva — serene powerful yogic form, Tripundra, crescent moon, rudraksha, "
-            "optional lingam abhishekam, Himalayan or Mandapam aura"
+            "Lord Shiva murti / linga ideal — Tripundra, jata, crescent, rudraksha, "
+            "serene yogic divinity or lingam with bilva, NOT a shirtless drama hero"
+        ),
+        "parvati": (
+            "Goddess Parvati / Ambika murti — motherly grace, silk saree, temple crown, "
+            "Uma-Maheshwara sanctum mood, classical idol proportions"
         ),
         "vishnu": (
-            "Lord Vishnu — calm royal kiritam, shankha chakra, Vaikuntha gold aura"
+            "Lord Vishnu murti — kiritam, shankha chakra, blue divine form, "
+            "Vaikuntha sanctum, classical agama iconography"
+        ),
+        "venkateswara": (
+            "Sri Venkateswara / Balaji murti — Tirumala idol form, namam, "
+            "shankha chakra, gold kavacham, temple darshan mood"
         ),
         "rama": (
-            "Lord Rama — noble warrior-prince with bow, blue-toned dignified skin"
+            "Sri Rama murti — kodanda, serene maryada face, classical icon, "
+            "NOT a TV serial prince"
         ),
         "krishna": (
-            "Lord Krishna — peacock feather, flute, pitambara, Vrindavan golden light"
+            "Sri Krishna murti — peacock feather, flute, pitambara, soft divine smile, "
+            "temple idol / classical painting ideal"
         ),
         "durga": (
-            "Goddess Durga — fierce-graceful, lion mount, red-gold shakti energy"
+            "Goddess Durga murti — multiple arms, trishula, lion vahana, "
+            "Navaratri sanctum shakti, classical idol not action-heroine"
         ),
         "ganesha": (
-            "Lord Ganesha — elephant head, modaka, festive red-gold temple lamps"
+            "Sri Ganesha murti — elephant head, modaka, red-gold silk, "
+            "temple vigneshwara idol ideal"
+        ),
+        "ayyappa": (
+            "Lord Ayyappa murti — Sabarimala idol form, yellow silk, "
+            "serene dhyana posture, temple lamp glow"
+        ),
+        "surya": (
+            "Surya Narayana murti — radiant solar deity, chariot / lotus aura, "
+            "classical sun-god iconography"
+        ),
+        "subrahmanya": (
+            "Lord Subrahmanya / Murugan murti — vel, peacock, "
+            "youthful divine ideal, temple form"
+        ),
+        "saraswati": (
+            "Goddess Saraswati murti — veena, white silk, swan, "
+            "vidya radiance, classical idol"
         ),
     }
     for name, desc in table.items():
         if name in key:
             return desc
-    return f"sacred Hindu deity for {deity or 'bhakti'} — South Indian classical iconography, cinematic CGI"
+    return (
+        f"classical South Indian temple murti ideal of {deity or 'the deity'} — "
+        "agama iconography, divine serene face, NOT a human drama actor"
+    )
+
+
+def _ritual_event_from_lyrics(
+    *,
+    lyrics: str | None,
+    deity: str | None,
+    title: str | None,
+    visual_style: str | None,
+    style_prompt: str | None,
+    notes: str | None,
+    mood: str | None,
+) -> tuple[str, str]:
+    """Return (event_label, event_direction) from lyric/deity cues."""
+    blob = f"{lyrics or ''} {title or ''} {visual_style or ''} {style_prompt or ''} {notes or ''} {deity or ''} {mood or ''}".lower()
+    deity_l = (deity or "").lower()
+
+    rules: list[tuple[tuple[str, ...], str, str]] = [
+        (
+            ("అభిషేక", "abhishek", "లింగ", "linga", "lingam", "పంచామృత", "panchamrita"),
+            "Lingam / murti abhishekam",
+            "sacred milk-water-ghee pour over Shiva lingam or murti, bilva leaves, "
+            "priests' hands optional only as blur, focus on divine form and falling sacred liquids",
+        ),
+        (
+            ("ఆరతి", "aarti", "హారతి", "harathi", "నీరాజన", "deepa"),
+            "Mangala aarti / harathi",
+            "circling brass aarti plate with flaming camphor/diyas before the murti, "
+            "incense smoke, bells implied by motion, devotees soft in background",
+        ),
+        (
+            ("అలంకార", "alankar", "పూజ", "pooja", "puja", "అర్చన", "archana", "నైవేద్య", "naivedya"),
+            "Alankaram & archana pooja",
+            "murti decorated with fresh garlands, turmeric-kumkum, flowers offered to feet, "
+            "silver plates, temple sanctum ritual in progress",
+        ),
+        (
+            ("దర్శన", "darshan", "గర్భగుడి", "garbhagriha", "సన్నిధి"),
+            "Garbhagriha darshan",
+            "intimate sanctum darshan of the decorated murti under oil lamps, "
+            "soft crowd silhouettes, sacred stillness",
+        ),
+        (
+            ("నవరాత్రి", "navaratri", "దుర్గ", "durga", "చండి"),
+            "Navaratri Durga utsavam",
+            "Durga murti with garlands, lamps rows, festive red-gold temple hall, "
+            "shakti utsav energy without action-movie violence",
+        ),
+        (
+            ("దీపావళి", "deepavali", "diwali", "కార్తీక", "kartika", "దీపం", "deepam"),
+            "Kartika / Deepavali deepotsavam",
+            "rows of oil lamps, marigold, murti glowing in lamp light, "
+            "temple courtyard deepam festival",
+        ),
+        (
+            ("సంధ్య", "sandhya", "సాయం", "pradosha", "ప్రదోష"),
+            "Sandhya / pradosha worship",
+            "dusk temple aarti mood, indigo-gold sky beyond gopuram, "
+            "lamps lighting before the murti",
+        ),
+        (
+            ("సూర్య", "surya", "ఆదిత్య", "ఉదయ", "prabhata", "సూర్యనమస్కార"),
+            "Surya prabhata archana",
+            "sunrise rays on Surya or morning deity murti, lotus, "
+            "water offering, dawn temple courtyard",
+        ),
+        (
+            ("సబరిమల", "sabarimala", "అయ్యప్ప", "ayyappa", "శరణం", "saranam"),
+            "Ayyappa temple worship",
+            "Sabarimala-style murti, ghee lamp, irumudi mood, "
+            "serene saranam chant atmosphere",
+        ),
+        (
+            ("గోవింద", "govinda", "వెంకటేశ్వర", "tirupati", "బాలాజీ"),
+            "Venkateswara seva / darshan",
+            "Balaji murti with gold kavacham, namam, flower seva, "
+            "Tirumala sanctum lamp glow",
+        ),
+        (
+            ("కమల", "lotus", "పద్మ", "స్వర్ణ", "gold coin", "లక్ష్మీ"),
+            "Lakshmi ashtottara / lotus seva",
+            "Lakshmi murti on lotus, coin-petal offering, "
+            "diyas and prosperity alankaram",
+        ),
+        (
+            ("సముద్ర", "ocean", "sea", "సేతు", "సుందర"),
+            "Seashore / Setu bhakti scene",
+            "divine murti or Hanuman ideal at sacred shore, "
+            "waves and sky as backdrop to worship mood — not a war scene",
+        ),
+    ]
+    for keys, label, direction in rules:
+        if any(k in blob for k in keys):
+            return label, direction
+
+    # Deity defaults when lyrics are sparse
+    if any(k in deity_l for k in ("shiva", "శివ")):
+        return (
+            "Shiva alankaram & deepa archana",
+            "Shiva murti or lingam with bilva, rudraksha, oil lamps, gentle abhishekam mist",
+        )
+    if any(k in deity_l for k in ("hanuman", "anjaneya", "ఆంజనేయ")):
+        return (
+            "Hanuman sindooram alankaram",
+            "Anjaneya murti with sindooram, garland, oil lamps, temple archana in progress",
+        )
+    if "morning" in blob or "dawn" in blob or "prabhata" in blob:
+        return (
+            "Prabhata mangala aarti",
+            "early-morning temple aarti before the murti, soft sunrise through mandapam",
+        )
+    if "evening" in blob or "aarti" in blob:
+        return (
+            "Sayamkala aarti",
+            "evening harathi with many diyas circling before the murti",
+        )
+    return (
+        "Temple murti seva from the lyric mood",
+        "active pooja moment from the song meaning — garlands, lamps, offerings, "
+        "sanctum ritual — not a static portrait with empty decorated background",
+    )
 
 
 def pick_style_reference(deity: str | None) -> Path | None:
@@ -165,50 +318,49 @@ def build_lyrics_scene_brief(
     char2 = _section(body, "Charanam 2")
     sloka = _section(body, "Slokam") or _section(body, "Sloka")
     lyric_bits = [b for b in (pallavi, anu, char1, char2, sloka) if b]
-    lyric_story = " | ".join(lyric_bits)[:800] if lyric_bits else (title or "Telugu bhakti")
+    lyric_story = " | ".join(lyric_bits)[:700] if lyric_bits else (title or "Telugu bhakti")
 
-    blob = f"{body} {visual_style or ''} {style_prompt or ''} {notes or ''}".lower()
-    setting_cues: list[str] = []
-    if any(k in blob for k in ("లింగ", "linga", "lingam", "అభిషేక", "abhishek")):
-        setting_cues.append("Shiva lingam abhishekam, bilva, sacred ash")
-    if any(k in blob for k in ("సంధ్య", "sandhya", "evening", "aarti", "ఆరతి")):
-        setting_cues.append("sandhya aarti lamps and incense dusk")
-    if any(k in blob for k in ("నవరాత్రి", "navaratri", "దీపావళి", "deepavali", "diwali")):
-        setting_cues.append("festival lamps, marigold, red-gold celebration")
-    if any(k in blob for k in ("సముద్ర", "ocean", "sea", "సుందర", "sundara")):
-        setting_cues.append("cinematic ocean / sundarakanda sea leap energy")
-    if any(k in blob for k in ("కమల", "lotus", "పద్మ", "స్వర్ణ", "gold coin")):
-        setting_cues.append("lotus throne, cascading gold coins, temple diyas")
-    if not setting_cues:
-        setting_cues.append("setting invented from the lyric story — cinematic, not generic stock")
+    event_label, event_dir = _ritual_event_from_lyrics(
+        lyrics=body,
+        deity=deity,
+        title=title,
+        visual_style=visual_style,
+        style_prompt=style_prompt,
+        notes=notes,
+        mood=mood,
+    )
 
     hero = _deity_visual(deity)
-    mood_bit = mood or "devotional power"
-    style_bit = (visual_style or "").strip()[:160]
-    notes_bit = (notes or "").strip()[:160]
+    mood_bit = mood or "bhakti / sacred stillness"
+    style_bit = (visual_style or "").strip()[:140]
+    notes_bit = (notes or "").strip()[:140]
 
     ref_line = (
-        "Match the ULTRA-PREMIUM cinematic lighting, CGI polish, color grade, and YouTube-thumbnail "
-        "composition quality of <<<image_1>>> (Ragam Spiritual channel style). "
-        "Do NOT copy the same deity or text from the reference — invent a NEW scene for THIS song. "
+        "Match ONLY the lighting richness and temple-gold grade of <<<image_1>>> "
+        "(Ragam Spiritual). Invent a NEW ritual scene for THIS song — "
+        "do not copy the same deity pose or any text from the reference. "
         if has_style_ref
         else ""
     )
 
     return (
         f"{ref_line}"
-        f"Ultra-premium 16:9 Telugu YouTube thumbnail BACKGROUND — mythological movie poster CGI, "
-        f"8K detail, volumetric god rays, jewel sparkle, particle dust, rim light, film still. "
-        f"FULL-BLEED single scene (no collage, no split panels, no black text box). "
-        f"SUBJECT: {hero}. Energy: {mood_bit}. "
-        f"LYRIC STORY TO ILLUSTRATE: {lyric_story}. "
-        f"SETTING: {'; '.join(setting_cues[:3])}. "
+        f"Sacred 16:9 Hindu temple VISUAL — classical murti / agama GOD IDEAL, "
+        f"South Indian sanctum realism, oil-lamp warmth, marigold, incense haze. "
+        f"NOT a Bollywood/TV drama human, NOT a fashion model, NOT shirtless CGI hero, "
+        f"NOT 'mythological movie poster' actor face — divine idol / shastra ideal form only. "
+        f"FULL-BLEED single ritual SCENE (no collage, no split panels, no text box). "
+        f"DEITY (god ideal): {hero}. Mood: {mood_bit}. "
+        f"RITUAL EVENT (must be visible): {event_label} — {event_dir}. "
+        f"LYRICS TO ILLUSTRATE (turn meaning into the pooja/event, not a blank portrait): "
+        f"{lyric_story}. "
         f"{('Visual style: ' + style_bit + '. ') if style_bit else ''}"
         f"{('Notes: ' + notes_bit + '. ') if notes_bit else ''}"
-        f"Composition: powerful deity hero filling LEFT–CENTER ~55–60%; RIGHT side softer/emptier "
-        f"for later title graphics, still continuous atmosphere. High CTR gold-orange-crimson punch. "
-        f"CRITICAL — ZERO TEXT: no Telugu, no Hindi, no Devanagari, no English, no letters, "
-        f"no captions, no watermarks, no logos, no Sai Baba, no selfies."
+        f"Composition: murti + ritual action filling LEFT–CENTER ~55–60%; RIGHT softer for later title. "
+        f"Show offerings, lamps, garlands, abhishekam/aarti/archana in progress — "
+        f"never a lone character on empty decorated backdrop. "
+        f"CRITICAL — ZERO TEXT: no Telugu/Hindi/English letters, no captions, logos, "
+        f"watermarks, Sai Baba, selfies, or modern phones."
     )[:2400]
 
 
@@ -268,9 +420,11 @@ def generate_rich_deity_scene(
     visual_style: str | None = None,
     style_prompt: str | None = None,
     notes: str | None = None,
+    resolution: str | None = None,
+    use_style_ref: bool = True,
     on_progress: ProgressFn | None = None,
 ) -> Path:
-    """Kling Omni @ 4K — ultra-premium lyrics-driven plate, zero text."""
+    """Kling Omni — ultra-premium lyrics-driven plate, zero text."""
     settings = get_settings()
     if not settings.kling_api_key.strip():
         raise KlingImageError("KLING_API_KEY missing")
@@ -278,11 +432,11 @@ def generate_rich_deity_scene(
     report(on_progress, 3, "Building ultra-premium scene prompt…")
     model = _normalize_model(settings.kling_image_model)
     resolution = _normalize_resolution(
-        getattr(settings, "kling_image_resolution", None) or "4k",
+        resolution or getattr(settings, "kling_image_resolution", None) or "4k",
         model=model,
     )
 
-    style_ref = pick_style_reference(deity)
+    style_ref = pick_style_reference(deity) if use_style_ref else None
     image_list: list[dict] = []
     if style_ref and style_ref.exists() and style_ref.stat().st_size < 9_000_000:
         # Resize ref so payload stays light
@@ -430,3 +584,193 @@ def generate_deity_background(
         out_path=out_path,
         on_progress=on_progress,
     )
+
+
+def _chroma_to_alpha(img: Image.Image) -> Image.Image:
+    """Knock out green-screen / flat studio backdrop for petal cutouts."""
+    rgba = img.convert("RGBA")
+    px = rgba.load()
+    assert px is not None
+    w, h = rgba.size
+    # Sample corner colors — AI often returns black/white instead of green
+    corners = [px[0, 0], px[w - 1, 0], px[0, h - 1], px[w - 1, h - 1]]
+    for y in range(h):
+        for x in range(w):
+            r, g, b, a = px[x, y]
+            # Chroma green / lime
+            if g >= 90 and g > r + 25 and g > b + 25:
+                px[x, y] = (r, g, b, 0)
+                continue
+            if g >= 70 and r < 90 and b < 90 and g > max(r, b) + 15:
+                px[x, y] = (r, g, b, 0)
+                continue
+            # Near-black backdrop
+            if r < 28 and g < 28 and b < 28:
+                px[x, y] = (r, g, b, 0)
+                continue
+            # Near-white / light gray studio backdrop
+            if r > 235 and g > 235 and b > 235:
+                px[x, y] = (r, g, b, 0)
+                continue
+            # Match flat corner backdrop color (tolerance)
+            for cr, cg, cb, _ca in corners:
+                if abs(r - cr) < 18 and abs(g - cg) < 18 and abs(b - cb) < 18:
+                    # only if corner itself looks like a flat backdrop (not petal)
+                    if max(cr, cg, cb) < 40 or min(cr, cg, cb) > 220 or (
+                        cg > cr + 20 and cg > cb + 20
+                    ):
+                        px[x, y] = (r, g, b, 0)
+                        break
+    return rgba
+
+
+def _split_opaque_blobs(rgba: Image.Image, *, min_area: int = 900) -> list[Image.Image]:
+    """Connected-component crop of opaque pixels → individual petal images."""
+    w, h = rgba.size
+    px = rgba.load()
+    assert px is not None
+    visited = [[False] * w for _ in range(h)]
+    crops: list[Image.Image] = []
+
+    def neighbors(x: int, y: int) -> list[tuple[int, int]]:
+        out: list[tuple[int, int]] = []
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dx == 0 and dy == 0:
+                    continue
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < w and 0 <= ny < h:
+                    out.append((nx, ny))
+        return out
+
+    for y0 in range(h):
+        for x0 in range(w):
+            if visited[y0][x0]:
+                continue
+            if px[x0, y0][3] < 40:
+                visited[y0][x0] = True
+                continue
+            stack = [(x0, y0)]
+            visited[y0][x0] = True
+            cells: list[tuple[int, int]] = []
+            while stack:
+                x, y = stack.pop()
+                cells.append((x, y))
+                for nx, ny in neighbors(x, y):
+                    if visited[ny][nx]:
+                        continue
+                    visited[ny][nx] = True
+                    if px[nx, ny][3] >= 40:
+                        stack.append((nx, ny))
+            if len(cells) < min_area:
+                continue
+            xs = [c[0] for c in cells]
+            ys = [c[1] for c in cells]
+            box = (min(xs), min(ys), max(xs) + 1, max(ys) + 1)
+            crop = rgba.crop(box)
+            # trim tiny margin
+            crops.append(crop)
+    crops.sort(key=lambda im: im.size[0] * im.size[1], reverse=True)
+    return crops
+
+
+def generate_realistic_petals(
+    out_dir: str | Path,
+    *,
+    count: int = 6,
+    force: bool = False,
+    on_progress: ProgressFn | None = None,
+) -> list[Path]:
+    """Kling Omni: photoreal flower petals on chroma green → cut out PNGs (cached)."""
+    settings = get_settings()
+    if not settings.kling_api_key.strip():
+        raise KlingImageError("KLING_API_KEY missing")
+
+    dest = Path(out_dir)
+    dest.mkdir(parents=True, exist_ok=True)
+    existing = sorted(dest.glob("petal_real_*.png"))
+    if existing and not force and len(existing) >= 4:
+        return existing[: max(count, len(existing))]
+
+    report(on_progress, 4, "Generating realistic flower petals with Kling…")
+    model = _normalize_model(settings.kling_image_model)
+    prompt = (
+        "Studio product photo of SIX separate photorealistic flower petals arranged in a neat "
+        "2-row by 3-column grid with LARGE empty gaps between each petal so they do not touch. "
+        "Petals only (no stems, no leaves, no whole flowers): "
+        "1 marigold orange petal, 2 rose pink petal, 3 jasmine cream-white petal, "
+        "4 hibiscus deep red petal, 5 lotus soft pink petal, 6 champaka / temple yellow petal. "
+        "Each petal shows natural veins, soft curl, delicate translucent edge, macro photography. "
+        "Background MUST be solid pure chroma key green #00FF00 only — flat, no gradient, "
+        "no floor, no shadow plate, no text, no watermark, no logo. Square 1:1 composition."
+    )
+    sheet_path = dest / "petal_sheet_kling.png"
+    timeout = float(settings.kling_image_timeout_sec or 240)
+    payload = {
+        "model_name": model if model in _OMNI_MODELS else "kling-v3-omni",
+        "prompt": prompt,
+        "resolution": "1k",
+        "result_type": "single",
+        "n": 1,
+        "aspect_ratio": "1:1",
+        "watermark_info": {"enabled": False},
+    }
+
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            create = client.post(
+                f"{_base_url()}/v1/images/omni-image",
+                headers=_auth_headers(),
+                json=payload,
+            )
+            try:
+                body = create.json()
+            except Exception:  # noqa: BLE001
+                body = {}
+            api_code = body.get("code")
+            if create.status_code >= 400 or api_code not in (0, "0", None):
+                msg = str(body.get("message") or create.text[:400])
+                raise KlingImageError(
+                    f"Kling petal create HTTP {create.status_code} code={api_code}: {msg}"
+                )
+            task_id = (body.get("data") or {}).get("task_id")
+            if not task_id:
+                raise KlingImageError(f"Kling petal missing task_id: {str(body)[:400]}")
+            report(on_progress, 12, "Kling rendering petal sheet…")
+            image_url = _poll_omni_task(
+                client, str(task_id), timeout_sec=timeout, on_progress=on_progress
+            )
+            dl = client.get(image_url)
+            if dl.status_code >= 400:
+                raise KlingImageError(f"Kling petal download HTTP {dl.status_code}")
+            sheet_path.write_bytes(dl.content)
+    except httpx.RequestError as exc:
+        raise KlingImageError(f"Kling petals unreachable: {exc}") from exc
+
+    report(on_progress, 88, "Cutting petals from chroma sheet…")
+    sheet = Image.open(sheet_path)
+    cut = _chroma_to_alpha(sheet)
+    cut.save(dest / "petal_sheet_alpha.png")
+    blobs = _split_opaque_blobs(cut, min_area=700)
+    # Clear old real petals before rewrite
+    for old in dest.glob("petal_real_*.png"):
+        old.unlink(missing_ok=True)
+    paths: list[Path] = []
+    for i, blob in enumerate(blobs[: max(count, 6)]):
+        # Normalize size for overlay (~128px long side)
+        bw, bh = blob.size
+        scale = 128 / max(bw, bh, 1)
+        nw = max(24, int(bw * scale))
+        nh = max(24, int(bh * scale))
+        resized = blob.resize((nw, nh), Image.Resampling.LANCZOS)
+        path = dest / f"petal_real_{i}.png"
+        resized.save(path)
+        paths.append(path)
+
+    if len(paths) < 3:
+        raise KlingImageError(
+            f"Could not cut enough petals from Kling sheet (got {len(paths)}). "
+            "Re-run with force=True."
+        )
+    report(on_progress, 96, f"Ready: {len(paths)} realistic petals")
+    return paths

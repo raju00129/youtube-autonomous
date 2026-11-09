@@ -17,7 +17,7 @@ from app.api.v1.publish import readiness as song_readiness
 from app.core.config import get_settings
 from app.db import get_db
 from app.content_templates import fill_shorts_pair, sync_song_publish_copy
-from app.lyrics_sections import extract_charanams
+from app.lyrics_sections import extract_sections, sanitize_suno_lyrics
 from app.models import LyricsVersion, MusicGeneration, ShortProject, SongProject
 from app.providers import llm
 from app.providers.cursor_llm import CursorLlmError
@@ -41,7 +41,19 @@ ALLOWED_AUDIO = {
     "audio/x-m4a",
     "audio/aac",
     "audio/ogg",
+    "audio/opus",
+    "audio/webm",
+    "video/webm",  # Chrome often labels .webm audio as video/webm
     "application/octet-stream",
+}
+ALLOWED_AUDIO_SUFFIXES = {
+    ".mp3",
+    ".wav",
+    ".m4a",
+    ".aac",
+    ".ogg",
+    ".opus",
+    ".webm",
 }
 
 
@@ -52,10 +64,10 @@ def _pipeline_payload(song: SongProject) -> dict:
 
 
 def _short_audio_windows(song: SongProject, lyrics_body: str | None) -> dict[int, dict]:
-    """Charanam mid-cut times for UI (Short N ← middle of Charanam N)."""
+    """Pallavi mid-cut times for UI (every Short ← Pallavi hook)."""
     from pathlib import Path
 
-    from app.lyrics_sections import charanam_audio_window
+    from app.lyrics_sections import pallavi_audio_window
     from app.services_video import SHORT_MAX_SEC, _ffprobe_duration
 
     music = song.music_generations[-1] if song.music_generations else None
@@ -69,17 +81,16 @@ def _short_audio_windows(song: SongProject, lyrics_body: str | None) -> dict[int
     except Exception:  # noqa: BLE001
         return {}
     out: dict[int, dict] = {}
+    a0, a1 = pallavi_audio_window(
+        lyrics_body,
+        dur,
+        clip_sec=SHORT_MAX_SEC,
+    )
     for s in getattr(song, "shorts", []) or []:
-        a0, a1 = charanam_audio_window(
-            lyrics_body,
-            dur,
-            charanam_index=int(s.slot_index),
-            clip_sec=SHORT_MAX_SEC,
-        )
         out[int(s.slot_index)] = {
             "audio_start_sec": a0,
             "audio_end_sec": a1,
-            "charanam": int(s.slot_index),
+            "section": "pallavi",
         }
     return out
 
@@ -91,7 +102,9 @@ def _song_payload(song: SongProject) -> dict:
     approved = next((l for l in reversed(song.lyrics_versions) if l.approved), None)
     lyrics = latest
     music = song.music_generations[-1] if song.music_generations else None
-    shorts = list(getattr(song, "shorts", []) or [])
+    from app.services_video import active_shorts
+
+    shorts = active_shorts(song)
     audio_windows = _short_audio_windows(song, lyrics.body if lyrics else None)
     return {
         "id": str(song.id),
@@ -241,6 +254,8 @@ class SongUpdate(BaseModel):
 class LyricsUpsert(BaseModel):
     body: str = Field(..., min_length=1, max_length=20000)
     approve: bool = False
+    title: str | None = Field(default=None, max_length=200)
+    style_prompt: str | None = None
 
 
 class AgentGenerateRequest(BaseModel):
@@ -262,6 +277,10 @@ def generate_song_with_agent(body: AgentGenerateRequest, db: Session = Depends(g
             detail="Set GEMINI_API_KEY for lyrics (or CURSOR_API_KEY / OPENAI_API_KEY fallback)",
         )
     try:
+        from app.lyrics_uniqueness import recent_lyrics_echo
+        import time as _time
+
+        avoid = recent_lyrics_echo(db, deity=body.deity, limit=4)
         generated = llm.generate_lyrics(
             title=body.title,
             deity=body.deity,
@@ -269,6 +288,8 @@ def generate_song_with_agent(body: AgentGenerateRequest, db: Session = Depends(g
             vocal=body.vocal_preference,
             language=body.language,
             music_genre=body.music_genre,
+            avoid_echo=avoid or None,
+            variation_seed=f"create-{int(_time.time())}",
         )
     except (GeminiLlmError, OpenAILlmError, CursorLlmError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -310,12 +331,13 @@ def generate_song_with_agent(body: AgentGenerateRequest, db: Session = Depends(g
         topic=body.topic,
         refresh_shorts=False,
     )
+    pallavi = (extract_sections(lyrics_body).get("pallavi") or song.title or "").strip()
     for short_def in fill_shorts_pair(
         title=song.title,
         deity=song.deity,
         youtube_title=song.youtube_title,
         youtube_description=song.youtube_description,
-        charanams=extract_charanams(lyrics_body, limit=2),
+        charanams=[pallavi] if pallavi else None,
     ):
         db.add(
             ShortProject(
@@ -328,7 +350,7 @@ def generate_song_with_agent(body: AgentGenerateRequest, db: Session = Depends(g
             )
         )
     db.flush()
-    ensure_song_thumbnail(db, song)
+    # Skip auto thumbnail — upload manually (or use Generate thumbnail on song page).
     db.commit()
     return {"data": _song_payload(_load_song(db, song.id))}
 
@@ -350,6 +372,15 @@ def regenerate_lyrics_with_agent(
     previous = song.lyrics_versions[-1].body if song.lyrics_versions else None
     previous_style = song.style_prompt
     try:
+        from app.lyrics_uniqueness import recent_lyrics_echo
+        import time as _time
+
+        avoid = recent_lyrics_echo(
+            db,
+            deity=body.deity or song.deity,
+            exclude_song_id=song.id,
+            limit=4,
+        )
         generated = llm.generate_lyrics(
             title=body.title or song.title,
             deity=body.deity or song.deity,
@@ -360,6 +391,8 @@ def regenerate_lyrics_with_agent(
             regenerate=True,
             previous_lyrics=previous,
             previous_style=previous_style,
+            avoid_echo=avoid or None,
+            variation_seed=f"{song.id}-regen-{int(_time.time())}",
         )
     except (GeminiLlmError, OpenAILlmError, CursorLlmError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -398,11 +431,7 @@ def regenerate_lyrics_with_agent(
         topic=body.topic or song.notes,
         refresh_shorts=True,
     )
-    # Fast local thumb only — AI rebuild is a separate button (avoids hanging regenerate)
-    try:
-        ensure_song_thumbnail(db, song, use_ai=False)
-    except Exception:  # noqa: BLE001 — lyrics success matters more than thumb
-        pass
+    # No auto thumbnail — user uploads or clicks Generate on song page.
     db.commit()
     return {"data": _song_payload(_load_song(db, song_id))}
 
@@ -485,19 +514,34 @@ def upsert_lyrics(song_id: uuid.UUID, body: LyricsUpsert, db: Session = Depends(
     if body.approve:
         for lv in song.lyrics_versions:
             lv.approved = False
+    # Strip Telugu ॥ headers — Suno sings them if left in
+    cleaned = sanitize_suno_lyrics(body.body)
     lyrics = LyricsVersion(
         song_id=song.id,
         version=next_version,
-        body=body.body.strip(),
+        body=cleaned,
         approved=body.approve,
     )
     db.add(lyrics)
     song.stage = "awaiting_audio" if body.approve else "lyrics_draft"
-    if body.approve and not song.style_prompt:
+    manual_title = (body.title or "").strip() or None
+    if manual_title:
+        song.title = manual_title
+    if body.style_prompt is not None:
+        song.style_prompt = enrich_style_prompt(
+            body.style_prompt,
+            vocal=song.vocal_preference,
+        )
+    elif body.approve and not song.style_prompt:
         song.style_prompt = _default_style(song.deity, song.music_genre, song.vocal_preference)
     db.flush()
-    sync_song_publish_copy(song, lyrics=body.body.strip(), gemini_title=song.title, refresh_shorts=True)
-    ensure_song_thumbnail(db, song)
+    sync_song_publish_copy(
+        song,
+        lyrics=cleaned,
+        gemini_title=manual_title or song.title,
+        refresh_shorts=True,
+        lock_title=bool(manual_title),
+    )
     db.commit()
     return {"data": _song_payload(_load_song(db, song_id))}
 
@@ -516,7 +560,6 @@ def approve_lyrics(song_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
     db.flush()
     lyrics = song.lyrics_versions[-1].body
     sync_song_publish_copy(song, lyrics=lyrics, gemini_title=song.title, refresh_shorts=True)
-    ensure_song_thumbnail(db, song)
     db.commit()
     return {"data": _song_payload(_load_song(db, song_id))}
 
@@ -578,8 +621,14 @@ async def upload_music(
     content_type = (file.content_type or "application/octet-stream").lower()
     name = file.filename or "upload.mp3"
     suffix = Path(name).suffix.lower() or ".mp3"
-    if content_type not in ALLOWED_AUDIO and suffix not in {".mp3", ".wav", ".m4a", ".aac", ".ogg"}:
-        raise HTTPException(status_code=400, detail=f"Unsupported audio type: {content_type}")
+    if content_type not in ALLOWED_AUDIO and suffix not in ALLOWED_AUDIO_SUFFIXES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported audio type: {content_type} ({suffix}). Use mp3, wav, m4a, ogg, or webm.",
+        )
+    # Normalize browser-labeled webm audio
+    if suffix == ".webm" and content_type in {"application/octet-stream", "video/webm"}:
+        content_type = "audio/webm"
 
     settings = get_settings()
     dest_dir = Path(settings.media_root) / "music" / str(song.id)

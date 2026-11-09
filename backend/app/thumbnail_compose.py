@@ -481,6 +481,15 @@ def compose_thumbnail(
     glow = glow.filter(ImageFilter.GaussianBlur(38))
     base = Image.alpha_composite(base.convert("RGBA"), glow).convert("RGB")
 
+    # Text-free plate for Ken Burns / video fallback (no Telugu, no logo)
+    try:
+        clean_path = out.parent / "thumb_clean_bg.jpg"
+        base.convert("RGB").save(
+            clean_path, format="JPEG", quality=94, optimize=True, subsampling=0
+        )
+    except OSError:
+        pass
+
     overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     od = ImageDraw.Draw(overlay)
     text_on_right = bool(prefer_photo and has_photo)

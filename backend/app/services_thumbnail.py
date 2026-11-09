@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.models import ChannelBrand, SongProject
-from app.providers import gemini_images, kling_images
+from app.providers import cursor_images, gemini_images, kling_images
 from app.thumbnail_compose import (
     compose_thumbnail,
     extract_pallavi_line,
@@ -123,8 +123,13 @@ def ensure_song_thumbnail(
         )
 
         last_err: Exception | None = None
-        # Prefer Gemini (ChatGPT-class stills); Kling Omni only as fallback
-        order = ["gemini", "kling"] if provider != "kling" else ["kling", "gemini"]
+        # Fixed ladder: Gemini → Kling → Cursor (override only if provider=kling)
+        if provider == "kling":
+            order = ["kling", "gemini", "cursor"]
+        elif provider == "cursor":
+            order = ["cursor", "gemini", "kling"]
+        else:
+            order = ["gemini", "kling", "cursor"]
         for name in order:
             try:
                 if name == "gemini":
@@ -132,11 +137,16 @@ def ensure_song_thumbnail(
                         continue
                     gemini_images.generate_rich_deity_scene(**scene_kwargs)
                     engine = "gemini_premium"
-                else:
+                elif name == "kling":
                     if not kling_images.is_configured():
                         continue
                     kling_images.generate_rich_deity_scene(**scene_kwargs)
                     engine = "kling_v3_omni_4k"
+                else:
+                    if not cursor_images.is_configured():
+                        continue
+                    cursor_images.generate_rich_deity_scene(**scene_kwargs)
+                    engine = "cursor_generate_image"
                 ai_cache.write_bytes(fresh.read_bytes())
                 bg_path = str(fresh)
                 last_err = None

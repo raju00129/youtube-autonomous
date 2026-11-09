@@ -6,8 +6,8 @@
 
 | Daypart | Long-form | Shorts |
 | --- | --- | --- |
-| **Morning** (~07:00 IST) | 1 song (audio + looping visual) | **2 clips** cut from that same A/V |
-| **Evening** (~18:30 IST) | 1 song (audio + looping visual) | **2 clips** cut from that same A/V |
+| **Morning** (~06:00 IST) | 1 song (audio + looping visual) | **2 clips** cut from that same A/V (Short 2 ≈ +3h → 09:00) |
+| **Evening** (~19:00 IST) | 1 song (audio + looping visual) | **2 clips** cut from that same A/V (Short 2 ≈ +2h → 21:00) |
 
 Shorts publish at the **same daypart time** as their parent song, with a link to the main video.
 

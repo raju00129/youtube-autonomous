@@ -30,6 +30,8 @@ def generate_lyrics(
     regenerate: bool = False,
     previous_lyrics: str | None = None,
     previous_style: str | None = None,
+    avoid_echo: str | None = None,
+    variation_seed: str | None = None,
 ) -> dict[str, Any]:
     settings = get_settings()
     if not settings.cursor_api_key.strip():
@@ -49,6 +51,8 @@ def generate_lyrics(
         "regenerate": regenerate,
         "previousLyrics": (previous_lyrics or "")[:2500] or None,
         "previousStyle": (previous_style or "")[:500] or None,
+        "avoidEcho": (avoid_echo or "")[:2200] or None,
+        "variationSeed": variation_seed,
     }
     try:
         with httpx.Client(timeout=float(settings.lyrics_agent_timeout_sec)) as client:

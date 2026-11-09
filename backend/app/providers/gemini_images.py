@@ -9,7 +9,6 @@ from __future__ import annotations
 import base64
 import io
 from pathlib import Path
-from urllib.parse import urlparse
 
 import httpx
 from PIL import Image
@@ -23,8 +22,7 @@ class GeminiImageError(RuntimeError):
 
 
 def is_configured() -> bool:
-    settings = get_settings()
-    return bool(settings.gemini_api_key.strip() or settings.aimlapi_api_key.strip())
+    return bool(get_settings().gemini_api_key.strip())
 
 
 def _write_bytes(out_path: str | Path, data: bytes) -> Path:
@@ -192,74 +190,6 @@ def _try_google_gemini(
     return None
 
 
-def _download_image(client: httpx.Client, url: str) -> bytes:
-    response = client.get(url)
-    if response.status_code >= 400:
-        raise GeminiImageError(f"AIMLAPI image download HTTP {response.status_code}")
-    return response.content
-
-
-def _try_aimlapi(prompt: str, out_path: Path, client: httpx.Client) -> Path | None:
-    settings = get_settings()
-    if not settings.aimlapi_api_key.strip():
-        return None
-
-    base = (settings.aimlapi_base_url or "https://api.aimlapi.com").rstrip("/")
-    primary = (settings.gemini_image_model or "gemini-nano-banana-2.1").strip()
-    model_map = {
-        "gemini-nano-banana-2.1": "google/gemini-nano-banana-2.1",
-        "gemini-3.1-flash-image": "google/nano-banana-2",
-        "gemini-3.1-flash-image-preview": "google/gemini-3-1-flash-image-preview",
-        "gemini-2.5-flash-image": "google/nano-banana-2",
-        "gemini-3.1-flash-lite-image": "google/nano-banana-2",
-    }
-    models: list[str] = []
-    seen: set[str] = set()
-    for raw in (primary, "gemini-3.1-flash-image", "gemini-nano-banana-2.1"):
-        mapped = model_map.get(raw, raw if raw.startswith("google/") else f"google/{raw}")
-        if mapped not in seen:
-            seen.add(mapped)
-            models.append(mapped)
-
-    errors: list[str] = []
-    for model in models:
-        for resolution in ("2K", "1K"):
-            response = client.post(
-                f"{base}/v1/images/generations",
-                headers={
-                    "Authorization": f"Bearer {settings.aimlapi_api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": model,
-                    "prompt": prompt,
-                    "aspect_ratio": "16:9",
-                    "resolution": resolution,
-                },
-            )
-            if response.status_code >= 400:
-                errors.append(
-                    f"aiml:{model}:{resolution}: HTTP {response.status_code} {response.text[:180]}"
-                )
-                continue
-            body = response.json()
-            items = body.get("data") if isinstance(body, dict) else None
-            if not isinstance(items, list) or not items:
-                errors.append(f"aiml:{model}:{resolution}: empty")
-                continue
-            first = items[0] if isinstance(items[0], dict) else {}
-            b64 = first.get("b64_json")
-            if b64:
-                return _write_bytes(out_path, base64.b64decode(b64))
-            url = first.get("url")
-            if url and isinstance(url, str) and urlparse(url).scheme in {"http", "https"}:
-                return _write_bytes(out_path, _download_image(client, url))
-            errors.append(f"aiml:{model}:{resolution}: no url/b64")
-
-    _try_aimlapi.last_errors = errors  # type: ignore[attr-defined]
-    return None
-
-
 def generate_rich_deity_scene(
     *,
     deity: str | None,
@@ -276,7 +206,7 @@ def generate_rich_deity_scene(
     """Ultra-premium 16:9 still via Gemini (ChatGPT-class), no text in frame."""
     settings = get_settings()
     if not is_configured():
-        raise GeminiImageError("GEMINI_API_KEY or AIMLAPI_API_KEY required for thumbnails")
+        raise GeminiImageError("GEMINI_API_KEY required for Gemini stills")
 
     report(on_progress, 5, "Building Gemini ultra-premium prompt…")
     style_part = _style_ref_part(deity)
@@ -293,7 +223,6 @@ def generate_rich_deity_scene(
     out = Path(out_path)
     timeout = float(getattr(settings, "gemini_image_timeout_sec", None) or 180)
     google_errors: list[str] = []
-    aiml_errors: list[str] = []
 
     try:
         with httpx.Client(timeout=timeout) as client:
@@ -303,16 +232,10 @@ def generate_rich_deity_scene(
             if result is not None:
                 report(on_progress, 92, "Gemini scene ready…")
                 return result
-            report(on_progress, 40, "Gemini direct failed — trying AIMLAPI…")
-            result = _try_aimlapi(prompt, out, client)
-            aiml_errors = list(getattr(_try_aimlapi, "last_errors", []) or [])
-            if result is not None:
-                report(on_progress, 92, "AIMLAPI Gemini scene ready…")
-                return result
     except httpx.RequestError as exc:
         raise GeminiImageError(f"Gemini images unreachable: {exc}") from exc
 
-    detail = "; ".join((google_errors + aiml_errors)[-4:]) or "no provider succeeded"
+    detail = "; ".join(google_errors[-4:]) or "no provider succeeded"
     raise GeminiImageError(f"Gemini image generation failed. {detail}")
 
 

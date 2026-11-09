@@ -6,5 +6,7 @@ export default defineConfig({
   server: {
     host: true,
     port: 5173,
+    // Allow reverse-proxied production host (Vite DNS rebinding protection).
+    allowedHosts: ["youtube-auto.sigwent.com", "localhost", ".sigwent.com"],
   },
 });

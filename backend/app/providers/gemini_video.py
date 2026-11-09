@@ -69,23 +69,27 @@ def generate_clip(
     dur = int(duration_sec or settings.gemini_video_duration or 10)
     dur = max(3, min(10, dur))
 
+    # Interactions API (v1beta): generation_config.video_config + VideoResponseFormat.
+    # Docs: https://ai.google.dev/gemini-api/docs/omni
     payload = {
         "model": settings.gemini_video_model,
         "input": prompt,
+        "generation_config": {
+            "video_config": {"task": "text_to_video"},
+        },
         "response_format": {
             "type": "video",
             "resolution": res,
             "aspect_ratio": ar,
-            "duration": str(dur),
+            "duration": f"{dur}s",
             "delivery": "inline",
         },
-        "video_config": {"task": "text_to_video"},
         "background": False,
         "store": False,
         "stream": False,
     }
 
-    url = "https://generativelanguage.googleapis.com/v1/interactions"
+    url = "https://generativelanguage.googleapis.com/v1beta/interactions"
     try:
         with httpx.Client(timeout=600.0) as client:
             response = client.post(
@@ -100,7 +104,8 @@ def generate_clip(
         raise GeminiVideoError(f"Gemini video unreachable: {exc}") from exc
 
     if response.status_code >= 400:
-        raise GeminiVideoError(f"Gemini video HTTP {response.status_code}: {response.text[:800]}")
+        detail = response.text[:800]
+        raise GeminiVideoError(f"Gemini video HTTP {response.status_code}: {detail}")
 
     body = response.json()
     status = str(body.get("status") or "").lower()

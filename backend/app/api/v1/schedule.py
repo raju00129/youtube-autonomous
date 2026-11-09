@@ -14,14 +14,10 @@ from sqlalchemy.orm import Session, selectinload
 from app.calendar_rules import DAYPART_FLAVOR, suggest_for_date, week_suggestions
 from app.content_templates import fill_shorts_pair, fill_youtube_longform
 from app.db import get_db
-from app.models import LyricsVersion, ScheduleSlot, ShortProject, SongProject
+from app.models import ScheduleSlot, ShortProject, SongProject
 from app.playlists import apply_playlists_to_song
 from app.providers import llm
 from app.providers import youtube as yt
-from app.providers.cursor_llm import CursorLlmError
-from app.providers.gemini_llm import GeminiLlmError
-from app.providers.openai_llm import OpenAILlmError
-from app.services_thumbnail import ensure_song_thumbnail
 
 router = APIRouter(prefix="/schedule", tags=["schedule"])
 IST = ZoneInfo("Asia/Kolkata")
@@ -43,6 +39,11 @@ def _default_publish_at(slot_date: date, daypart: str) -> datetime:
 
 def _slot_payload(slot: ScheduleSlot) -> dict:
     daypart = slot.daypart or "morning"
+    song = getattr(slot, "song", None)
+    published = bool(
+        slot.status == "published"
+        or (song and (song.stage == "published" or song.youtube_video_id))
+    )
     return {
         "id": str(slot.id),
         "week_start": slot.week_start.isoformat(),
@@ -54,8 +55,13 @@ def _slot_payload(slot: ScheduleSlot) -> dict:
         "title_hint": slot.title_hint,
         "topic_override": slot.topic_override,
         "deity_override": slot.deity_override,
-        "status": slot.status,
+        "status": "published" if published else slot.status,
+        "published": published,
         "song_id": str(slot.song_id) if slot.song_id else None,
+        "song_title": (song.title if song else None),
+        "song_stage": (song.stage if song else None),
+        "youtube_url": (song.youtube_url if song else None),
+        "youtube_video_id": (song.youtube_video_id if song else None),
         "auto_deity": slot.auto_deity,
         "auto_topic": slot.auto_topic,
         "auto_mood": slot.auto_mood,
@@ -67,10 +73,10 @@ def _slot_payload(slot: ScheduleSlot) -> dict:
 
 class WeekEnsureRequest(BaseModel):
     week_start: date | None = None
-    morning_hour: int = Field(default=7, ge=0, le=23)
+    morning_hour: int = Field(default=6, ge=0, le=23)
     morning_minute: int = Field(default=0, ge=0, le=59)
-    evening_hour: int = Field(default=18, ge=0, le=23)
-    evening_minute: int = Field(default=30, ge=0, le=59)
+    evening_hour: int = Field(default=19, ge=0, le=23)
+    evening_minute: int = Field(default=0, ge=0, le=59)
 
 
 class SlotUpdate(BaseModel):
@@ -97,6 +103,7 @@ def get_week(week_start: date, db: Session = Depends(get_db)) -> dict:
     slots = db.scalars(
         select(ScheduleSlot)
         .where(ScheduleSlot.week_start == monday)
+        .options(selectinload(ScheduleSlot.song))
         .order_by(ScheduleSlot.slot_date, ScheduleSlot.daypart.desc())
         # morning before evening: 'evening' < 'morning' alphabetically false
         # use custom: morning first via CASE — simpler sort in Python
@@ -133,7 +140,9 @@ def ensure_week(body: WeekEnsureRequest, db: Session = Depends(get_db)) -> dict:
     """Create 14 slots (7 days × morning + evening) with auto deity/mood."""
     monday = _monday_of(body.week_start or date.today())
     existing_rows = db.scalars(
-        select(ScheduleSlot).where(ScheduleSlot.week_start == monday)
+        select(ScheduleSlot)
+        .where(ScheduleSlot.week_start == monday)
+        .options(selectinload(ScheduleSlot.song))
     ).all()
     existing = {(s.slot_date, (s.daypart or "morning")): s for s in existing_rows}
     created = 0
@@ -191,10 +200,42 @@ def update_slot(slot_id: uuid.UUID, body: SlotUpdate, db: Session = Depends(get_
     slot = db.get(ScheduleSlot, slot_id)
     if not slot:
         raise HTTPException(status_code=404, detail="Slot not found")
-    for key, value in body.model_dump(exclude_unset=True).items():
+    data = body.model_dump(exclude_unset=True)
+    if "publish_at" in data and data["publish_at"] is not None:
+        when = data["publish_at"]
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=IST)
+        else:
+            when = when.astimezone(IST)
+        data["publish_at"] = when
+        # Keep slot on its planned week/day so it does not vanish from the week view.
+        # Only publish_at (and linked song) change.
+    for key, value in data.items():
         setattr(slot, key, value)
+
+    # Linked song follows slot time; Short 1 same time, Short 2 +stagger hours
+    if "publish_at" in data and slot.song_id and data["publish_at"] is not None:
+        song = db.get(SongProject, slot.song_id)
+        if song:
+            song.publish_at = data["publish_at"]
+            from app.services_publish import apply_short_publish_times
+            from sqlalchemy.orm import selectinload
+
+            song = db.scalar(
+                select(SongProject)
+                .where(SongProject.id == song.id)
+                .options(selectinload(SongProject.shorts))
+            )
+            if song:
+                apply_short_publish_times(song, data["publish_at"])
+
     db.commit()
-    db.refresh(slot)
+    slot = db.scalar(
+        select(ScheduleSlot)
+        .where(ScheduleSlot.id == slot_id)
+        .options(selectinload(ScheduleSlot.song))
+    )
+    assert slot is not None
     return {"data": _slot_payload(slot)}
 
 
@@ -214,7 +255,17 @@ def materialize_slot(
     daypart = slot.daypart or "morning"
     suggestion = suggest_for_date(slot.slot_date, daypart=daypart)
     deity = slot.deity_override or slot.auto_deity or suggestion["deity"]
-    topic = slot.topic_override or slot.auto_topic or suggestion["topic"]
+    raw_topic = slot.topic_override or slot.auto_topic or suggestion["topic"]
+    festive_tokens = (
+        "kartika", "karthika", "diwali", "deepavali", "navaratri",
+        "sankranti", "ugadi", "janmashtami", "shivaratri", "vaikuntha",
+        "seasonal mood", "festive",
+    )
+    # Drop leftover calendar-month festival forcing from older slots
+    if any(t in (raw_topic or "").lower() for t in festive_tokens):
+        topic = suggestion["topic"]
+    else:
+        topic = raw_topic
     title_hint = (
         slot.title_hint
         or f"{deity} — {slot.slot_date.strftime('%a')} {daypart}"
@@ -222,40 +273,30 @@ def materialize_slot(
     vocal = suggestion.get("vocal_preference", "m")
     genre = suggestion.get("music_genre")
     visual = suggestion.get("visual_style")
-    mood = slot.auto_mood or suggestion.get("month_mood")
+    raw_mood = slot.auto_mood or suggestion.get("month_mood") or ""
+    mood = (
+        "peaceful temple devotion"
+        if any(t in raw_mood.lower() for t in festive_tokens)
+        else (raw_mood or "peaceful temple devotion")
+    )
 
-    lyrics_body = None
-    style = None
+    # Fast create: never block HTTP on Gemini. Lyrics run in Celery so
+    # multiple "Create song" clicks can run in parallel.
+    lyrics_job_id: str | None = None
+    if body.generate_lyrics and not llm.is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Set GEMINI_API_KEY for generate (or CURSOR_API_KEY / OPENAI_API_KEY)",
+        )
+
     title = title_hint
-
-    if body.generate_lyrics:
-        if not llm.is_configured():
-            raise HTTPException(
-                status_code=503,
-                detail="Set OPENAI_API_KEY and/or CURSOR_API_KEY for generate",
-            )
-        try:
-            generated = llm.generate_lyrics(
-                title=title_hint,
-                deity=deity,
-                topic=topic,
-                vocal=vocal,
-                music_genre=genre,
-                energy_hint=suggestion.get("energy_hint"),
-            )
-        except (GeminiLlmError, OpenAILlmError, CursorLlmError) as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
-        lyrics_body = str(generated["lyrics"]).strip()
-        style = str(generated.get("style_prompt") or "").strip() or None
-        title = str(generated.get("title") or title_hint)[:200]
-
     meta = fill_youtube_longform(
         title=title,
         deity=deity,
         topic=topic,
         mood=mood,
-        lyrics_excerpt=lyrics_body,
-        lyrics_full=lyrics_body,
+        lyrics_excerpt=None,
+        lyrics_full=None,
     )
 
     song = SongProject(
@@ -264,9 +305,9 @@ def materialize_slot(
         language="te",
         music_genre=genre,
         vocal_preference=vocal,
-        style_prompt=style,
+        style_prompt=None,
         visual_style=visual,
-        stage="lyrics_draft" if lyrics_body else "scheduled",
+        stage="generating_lyrics" if body.generate_lyrics else "scheduled",
         notes=f"[{daypart}] {topic}",
         publish_at=slot.publish_at,
         youtube_title=meta["youtube_title"],
@@ -276,18 +317,7 @@ def materialize_slot(
     db.add(song)
     db.flush()
 
-    if lyrics_body:
-        db.add(
-            LyricsVersion(
-                song_id=song.id,
-                version=1,
-                body=lyrics_body,
-                approved=body.approve_lyrics,
-            )
-        )
-        song.stage = "awaiting_audio" if body.approve_lyrics else "lyrics_draft"
-
-    from app.lyrics_sections import extract_charanams
+    from app.services_publish import short_release_at
 
     for short_def in fill_shorts_pair(
         title=title,
@@ -296,7 +326,7 @@ def materialize_slot(
         daypart=daypart,
         youtube_title=meta["youtube_title"],
         youtube_description=meta["youtube_description"],
-        charanams=extract_charanams(lyrics_body, limit=2) if lyrics_body else None,
+        charanams=None,
     ):
         db.add(
             ShortProject(
@@ -306,7 +336,11 @@ def materialize_slot(
                 hook=short_def["hook"],
                 description=short_def["description"],
                 stage="planned",
-                publish_at=slot.publish_at,
+                publish_at=(
+                    short_release_at(slot.publish_at, short_def["slot_index"])
+                    if slot.publish_at
+                    else None
+                ),
             )
         )
 
@@ -319,15 +353,29 @@ def materialize_slot(
     playlist_pick = apply_playlists_to_song(
         song, daypart=daypart, channel_playlists=channel_playlists
     )
-    if lyrics_body:
-        ensure_song_thumbnail(db, song, daypart=daypart, use_ai=True)
 
     slot.song_id = song.id
-    slot.status = "song_created" if lyrics_body else "planned"
+    slot.status = "song_created"
     slot.auto_deity = deity
     slot.auto_topic = topic
     slot.auto_mood = mood
     db.commit()
+
+    if body.generate_lyrics:
+        from app.workers.tasks import song_fill_lyrics
+
+        async_result = song_fill_lyrics.delay(
+            str(song.id),
+            title_hint=title_hint,
+            deity=deity,
+            topic=topic,
+            vocal=vocal,
+            music_genre=genre,
+            energy_hint=suggestion.get("energy_hint"),
+            approve=body.approve_lyrics,
+            daypart=daypart,
+        )
+        lyrics_job_id = str(async_result.id)
 
     song = db.scalar(
         select(SongProject)
@@ -335,6 +383,12 @@ def materialize_slot(
         .options(selectinload(SongProject.shorts), selectinload(SongProject.lyrics_versions))
     )
     assert song is not None
+    slot = db.scalar(
+        select(ScheduleSlot)
+        .where(ScheduleSlot.id == slot_id)
+        .options(selectinload(ScheduleSlot.song))
+    )
+    assert slot is not None
     return {
         "data": {
             "slot": _slot_payload(slot),
@@ -342,6 +396,8 @@ def materialize_slot(
             "title": song.title,
             "daypart": daypart,
             "stage": song.stage,
+            "lyrics_pending": bool(lyrics_job_id),
+            "lyrics_job_id": lyrics_job_id,
             "playlists": playlist_pick,
             "youtube_playlist_title": song.youtube_playlist_title,
             "shorts_playlist_title": song.shorts_playlist_title,
@@ -357,9 +413,16 @@ def materialize_slot(
                 for s in song.shorts
             ],
             "next": [
+                "Lyrics generate in the background — open the song when ready",
                 "Approve lyrics → Suno → upload MP3 (one audio for this daypart)",
                 "Generate visual once; cut 2 Short clips from the same audio+video",
                 "Publish long-form + 2 Shorts at this daypart time; Shorts link to main",
             ],
+            "note": (
+                "Song created. Gemini lyrics are generating in the background — "
+                "you can create another slot now."
+                if lyrics_job_id
+                else "Song created without lyrics."
+            ),
         }
     }

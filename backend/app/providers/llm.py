@@ -16,6 +16,14 @@ logger = logging.getLogger(__name__)
 LlmError = GeminiLlmError
 
 
+def _sanitize_generated(data: dict[str, Any]) -> dict[str, Any]:
+    from app.lyrics_sections import sanitize_suno_lyrics
+
+    if isinstance(data.get("lyrics"), str):
+        data["lyrics"] = sanitize_suno_lyrics(data["lyrics"])
+    return data
+
+
 def is_configured() -> bool:
     return (
         gemini_llm.is_configured()
@@ -51,7 +59,7 @@ def generate_lyrics(**kwargs: Any) -> dict[str, Any]:
         try:
             data = gemini_llm.generate_lyrics(**kwargs)
             data.setdefault("provider", "gemini")
-            return data
+            return _sanitize_generated(data)
         except Exception as exc:  # noqa: BLE001
             msg = str(exc)
             logger.warning("Gemini lyrics failed, fallback=%s: %s", try_cursor or try_openai, msg[:300])
@@ -66,7 +74,7 @@ def generate_lyrics(**kwargs: Any) -> dict[str, Any]:
             data.setdefault("model", settings.cursor_llm_model)
             if errors:
                 data["fallback_from"] = errors
-            return data
+            return _sanitize_generated(data)
         except Exception as exc:  # noqa: BLE001
             msg = str(exc)
             logger.warning("Cursor lyrics failed, fallback=%s: %s", try_openai, msg[:300])
@@ -80,7 +88,7 @@ def generate_lyrics(**kwargs: Any) -> dict[str, Any]:
             data.setdefault("provider", "openai")
             if errors:
                 data["fallback_from"] = errors
-            return data
+            return _sanitize_generated(data)
         except Exception as exc:  # noqa: BLE001
             errors.append(f"openai: {str(exc)[:240]}")
             raise OpenAILlmError(" | ".join(errors)) from exc

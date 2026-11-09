@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     app_secret_key: str = "dev-secret"
     token_encryption_key: str = "dev-token-key"
     cors_origins: str = "http://localhost:5173"
+    # Simple studio gate — required on every portal visit / API call
+    portal_access_key: str = "0214"
 
     database_url: str = "postgresql+psycopg://ragam:ragam@localhost:5432/ragam"
     redis_url: str = "redis://localhost:6379/0"
@@ -29,7 +31,7 @@ class Settings(BaseSettings):
     gemini_llm_model: str = "gemini-3.8-flash"
     gemini_image_model: str = "gemini-3.1-flash-image"
     gemini_image_timeout_sec: int = 180
-    # Thumbnails: gemini (ChatGPT-class stills) | kling (Omni 4K fallback)
+    # Thumbnails / stills ladder starts here: gemini | kling | cursor
     thumbnail_image_provider: str = "gemini"
     gemini_video_model: str = "gemini-omni-1.1-flash"
     gemini_video_duration: int = 10
@@ -37,10 +39,28 @@ class Settings(BaseSettings):
     gemini_video_aspect_ratio: str = "16:9"
     # Video: auto = Gemini first, Kling on quota/fail; gemini | kling force one
     video_provider: str = "auto"
+    # scenes = hero stills → animate → FFmpeg assemble (cost-efficient)
+    # singleshot = one AI video clip (legacy)
+    video_pipeline: str = "scenes"
+    video_scene_count: int = 12
+    # Longer Ken Burns = slower sacred motion (avoid jerky time-stretch)
+    video_scene_clip_sec: int = 15
+    # kenburns (default, $0) | auto (try Kling i2v then Ken Burns) | kling_i2v
+    video_scene_animate: str = "kenburns"
+    # Long-form silent visual target before audio mux (smooth extend, not hard 10s loop)
+    video_main_min_sec: float = 45.0
+    # Mix: volume-only bump for quiet Suno/uploads (never changes tempo/pitch)
+    audio_target_mean_db: float = -12.0
+    audio_quiet_below_db: float = -16.0
+    audio_max_boost_db: float = 10.0
     # Auto pipeline: start video+mix this many minutes before publish_at
     prep_lead_minutes: int = 60
     # Allow late prep up to this many minutes after publish_at if mix missing
     prep_grace_minutes: int = 15
+    # Short 1 with main video; Short 2+ stagger this many hours later on YouTube
+    short_stagger_hours: int = 5
+    # How many Shorts to cut per song (1 for now — Short 2 paused)
+    shorts_count: int = 1
 
     cursor_api_key: str = ""
     cursor_llm_model: str = "composer-2.5"
@@ -63,8 +83,6 @@ class Settings(BaseSettings):
     sunoapi_base_url: str = "https://api.sunoapi.org"
     sunoapi_model: str = "V6"
     sunoapi_callback_url: str = "https://httpbin.org/post"
-    aimlapi_api_key: str = ""
-    aimlapi_base_url: str = "https://api.aimlapi.com"
 
     # Kling — thumbnails + video (paid subscription)
     kling_api_key: str = ""
@@ -103,7 +121,9 @@ class Settings(BaseSettings):
         kling_ok = bool(self.kling_api_key.strip())
         return {
             "gemini_lyrics": gemini_ok,
+            "gemini_images": gemini_ok,
             "kling_thumbnails": kling_ok,
+            "cursor_images": bool(self.cursor_api_key.strip()),
             "suno_manual_upload": True,
             "mureka_music": bool(self.mureka_api_key.strip()),
             "kling_video_720p": kling_ok,

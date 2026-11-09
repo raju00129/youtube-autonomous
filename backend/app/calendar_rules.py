@@ -1,4 +1,4 @@
-"""Telugu / South-Indian weekday + daypart deity rotation + month festive moods."""
+"""Telugu / South-Indian weekday + daypart deity rotation (beautiful deity songs)."""
 
 from __future__ import annotations
 
@@ -8,9 +8,19 @@ from typing import Any
 # Full Hindu pantheon used by Ragam Spiritual (no Sai / non-Hindu figures).
 HINDU_DEITIES: dict[str, dict[str, str]] = {
     "Shiva": {
-        "topic": "Shaiva bhakti — linga archana, Om Namah Shivaya, serene mandapam",
+        "topic": "Shaiva bhakti — choose a FRESH angle (not the same prabhata-linga song every time)",
         "music_genre": "traditional Telugu Shaiva keerthana; tempo from lyric mood (often meditative slow–medium)",
         "energy_hint": "meditative",
+        "topic_angles": [
+            "Kailasa cool moonlight, Gangadhara stillness, soft damaru hush",
+            "Nataraja cosmic dance — ananda tandava, flaming aureole devotion",
+            "bilva archana fragrance, vibhuti streaks, silent stone linga glow",
+            "Neelakantha karuna — halahala swallowed for the worlds",
+            "Pashupati protector — gentle ugra-karuna for the devotee",
+            "Ardhanarishwara unity — Shiva-Shakti one form, serene mandapam",
+            "Chandrashekhara night vigil — crescent coolness, deep Om Namah Shivaya",
+            "inner linga jyothi — heart-cave meditation, not wake-up-clock framing",
+        ],
     },
     "Parvati": {
         "topic": "Parvati / Ambika — motherly grace, Uma-Maheshwara shakti",
@@ -191,18 +201,35 @@ MONTH_MOOD: dict[int, dict[str, str]] = {
 }
 
 
+_MORNING_PREFIXES = [
+    "Fresh temple devotion — invent a unique angle (avoid repeating prabhata wake-up formulas)",
+    "Serene mandapam bhakti — soft light, but NOT another identical sunrise-suprabhata lyric",
+    "Quiet hour devotion — cool stone, first conch, new imagery each day",
+    "Dawn-adjacent mood only as light colour — focus on deity leela/guna, not clock-time lyrics",
+]
+_EVENING_PREFIXES = [
+    "Lamp-lit evening devotion — warm mandapam, fresh imagery (not the same sandhya lines every day)",
+    "Sandhya mood as colour only — invent a new poetic focus for this deity",
+    "Dusk temple hush — deep karuna / nama, avoid cookie-cutter aarti templates",
+]
+
 DAYPART_FLAVOR = {
+    # Channel data (Nov 2026): long-form avg views ~2× stronger at ~6 AM IST than ~7 PM;
+    # Shorts slightly stronger at ~7 PM. Keep both dayparts; morning favors long-form,
+    # evening favors Shorts. Publish at window start so indexing meets viewers.
     "morning": {
         "label": "Morning (మంగళారతి / early devotion)",
-        "topic_prefix": "Early morning temple mood — soft sunrise aarti energy",
-        "default_hour": 7,
+        "topic_prefix": _MORNING_PREFIXES[0],
+        "default_hour": 6,
         "default_minute": 0,
+        "short2_stagger_hours": 6,  # → ~12 PM Shorts lunch-scroll peak
     },
     "evening": {
         "label": "Evening (సాయంకాల హారతి)",
-        "topic_prefix": "Evening lamp-lit aarti mood — warm mandapam devotion",
-        "default_hour": 18,
-        "default_minute": 30,
+        "topic_prefix": _EVENING_PREFIXES[0],
+        "default_hour": 19,
+        "default_minute": 0,
+        "short2_stagger_hours": 0,  # same evening window — Shorts peak 7–9 PM
     },
 }
 
@@ -246,11 +273,29 @@ def suggest_for_date(
     weekday = d.weekday()
     deity = resolve_deity(d, part)
     day = deity_profile(deity)
-    month = MONTH_MOOD[d.month]
     vocal = day.get("vocal_preference", "m")
+    # Rotate daypart colour + deity angle so lyrics don't clone yesterday
+    if part == "morning":
+        prefix = _MORNING_PREFIXES[(d.toordinal() + weekday) % len(_MORNING_PREFIXES)]
+    else:
+        prefix = _EVENING_PREFIXES[(d.toordinal() + weekday) % len(_EVENING_PREFIXES)]
+    angles = day.get("topic_angles") or []
+    angle = ""
+    if angles:
+        angle = angles[(d.toordinal() + sum(ord(c) for c in deity)) % len(angles)]
+    base_topic = day["topic"]
+    # Beautiful deity song only — do not force calendar-month festivals
+    # (Kartika, Navaratri, etc.) into every topic.
     topic = (
-        f"{flavor['topic_prefix']}. {day['topic']}. "
-        f"Seasonal mood: {month['mood']} ({month['festive_hint']})."
+        f"{prefix}. {base_topic}. "
+        + (f"Today's unique angle: {angle}. " if angle else "")
+        + "Timeless temple bhakti — unique title/Pallavi for this draft; "
+        "do not clone recent channel songs."
+    )
+    visual = day.get(
+        "visual_style",
+        "serene South Indian temple sanctum, soft oil-lamp glow, "
+        "fresh flowers, peaceful murti devotion",
     )
     return {
         "date": d.isoformat(),
@@ -265,16 +310,16 @@ def suggest_for_date(
         "music_genre": day["music_genre"],
         "energy_hint": day.get("energy_hint"),
         "vocal_preference": vocal,
-        "month_mood": month["mood"],
-        "festive_hint": month["festive_hint"],
-        "visual_style": month["visual_style"],
+        "month_mood": "peaceful temple devotion",
+        "festive_hint": "",
+        "visual_style": visual,
         "pantheon": sorted(HINDU_DEITIES.keys()),
         "shorts_plan": (
             "Same long-form audio + looping visual → cut 2 Shorts clips; "
             "publish both Shorts at this daypart time with link to main song."
         ),
         "thumbnail_notes": (
-            f"Feature {deity} prominently; seasonal look: {month['visual_style']}; "
+            f"Feature {deity} prominently; serene temple look: {visual}; "
             "include channel logo + Telugu song title."
         ),
     }

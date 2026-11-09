@@ -17,6 +17,50 @@ def smoke_ping(message: str = "pong") -> dict[str, str]:
 
 
 @celery_app.task(
+    name="app.workers.tasks.denoise_video",
+    bind=True,
+    soft_time_limit=3600,
+    time_limit=3900,
+)
+def denoise_video(self, job_id: str) -> dict[str, Any]:
+    """Strip audio noise from a standalone upload; video stream copied as-is."""
+    from app.core.config import get_settings
+    from app.services_denoise import (
+        DenoiseError,
+        cleaned_path,
+        denoise_job_dir,
+        denoise_video_file,
+        read_meta,
+    )
+
+    celery_progress(self, 5, "Starting audio noise removal…", job_id=job_id)
+    settings = get_settings()
+    job_dir = denoise_job_dir(settings.media_root, job_id)
+    meta = read_meta(job_dir)
+    input_name = str(meta.get("input_name") or "")
+    source = job_dir / input_name if input_name else None
+    if not source or not source.exists():
+        # Fallback: first input_* file in the job dir
+        candidates = sorted(job_dir.glob("input_*")) if job_dir.exists() else []
+        if not candidates:
+            raise ValueError(f"Denoise input missing for job {job_id}")
+        source = candidates[0]
+
+    out = cleaned_path(job_dir)
+    celery_progress(self, 20, "Denoising audio (picture unchanged)…", job_id=job_id)
+    try:
+        denoise_video_file(source, out, timeout=3500)
+    except DenoiseError:
+        raise
+    celery_progress(self, 100, "Noise removed — ready to download", job_id=job_id)
+    return {
+        "job_id": job_id,
+        "download_path": f"/api/v1/denoise/{job_id}/download",
+        "original_filename": meta.get("original_filename"),
+    }
+
+
+@celery_app.task(
     name="app.workers.tasks.visuals_generate",
     bind=True,
     soft_time_limit=1500,
@@ -172,6 +216,149 @@ def song_auto_publish(self, song_id: str) -> dict[str, Any]:
         except Exception:
             db.rollback()
             raise
+    finally:
+        db.close()
+
+
+@celery_app.task(
+    name="app.workers.tasks.song_fill_lyrics",
+    bind=True,
+    soft_time_limit=300,
+    time_limit=360,
+)
+def song_fill_lyrics(
+    self,
+    song_id: str,
+    *,
+    title_hint: str,
+    deity: str | None = None,
+    topic: str | None = None,
+    vocal: str | None = "m",
+    music_genre: str | None = None,
+    energy_hint: str | None = None,
+    approve: bool = False,
+    daypart: str | None = "morning",
+) -> dict[str, Any]:
+    """Background Gemini lyrics after a fast song create (allows parallel creates)."""
+    from app.content_templates import fill_shorts_pair, fill_youtube_longform, sync_song_publish_copy
+    from app.db import SessionLocal
+    from app.models import LyricsVersion, SongProject
+    from app.providers import llm
+    from app.providers.cursor_llm import CursorLlmError
+    from app.providers.gemini_llm import GeminiLlmError
+    from app.providers.openai_llm import OpenAILlmError
+    from app.style_prompt import enrich_style_prompt
+
+    celery_progress(self, 5, "Writing Telugu lyrics with Gemini…", song_id=song_id)
+    db = SessionLocal()
+    try:
+        song = db.scalar(
+            select(SongProject)
+            .where(SongProject.id == uuid.UUID(song_id))
+            .options(
+                selectinload(SongProject.shorts),
+                selectinload(SongProject.lyrics_versions),
+            )
+        )
+        if not song:
+            raise ValueError(f"Song not found: {song_id}")
+        if song.lyrics_versions:
+            return {"song_id": song_id, "skipped": True, "reason": "already_has_lyrics"}
+
+        try:
+            from app.lyrics_uniqueness import recent_lyrics_echo
+            import time as _time
+
+            avoid = recent_lyrics_echo(
+                db,
+                deity=deity or song.deity,
+                exclude_song_id=song.id,
+                limit=4,
+            )
+            generated = llm.generate_lyrics(
+                title=title_hint,
+                deity=deity or song.deity,
+                topic=topic or song.notes,
+                vocal=vocal or song.vocal_preference or "m",
+                music_genre=music_genre or song.music_genre,
+                energy_hint=energy_hint,
+                avoid_echo=avoid or None,
+                variation_seed=f"{song.id}-{int(_time.time())}",
+            )
+        except (GeminiLlmError, OpenAILlmError, CursorLlmError):
+            song.stage = "scheduled"
+            song.notes = (song.notes or "") + "\n[lyrics_error] Gemini failed — regenerate from song page."
+            db.commit()
+            raise
+
+        celery_progress(self, 70, "Saving lyrics + YouTube package…", song_id=song_id)
+        lyrics_body = str(generated["lyrics"]).strip()
+        style = enrich_style_prompt(
+            (generated.get("style_prompt") or "").strip()
+            or (song.style_prompt or ""),
+            vocal=vocal or song.vocal_preference,
+        )
+        gemini_title = str(generated.get("title") or title_hint)[:200]
+        song.title = gemini_title
+        song.style_prompt = style or song.style_prompt
+        db.add(
+            LyricsVersion(
+                song_id=song.id,
+                version=1,
+                body=lyrics_body,
+                approved=approve,
+            )
+        )
+        song.stage = "awaiting_audio" if approve else "lyrics_draft"
+        db.flush()
+        sync_song_publish_copy(
+            song,
+            lyrics=lyrics_body,
+            gemini_title=gemini_title,
+            topic=topic or song.notes,
+            refresh_shorts=False,
+        )
+        # Refresh Shorts copy from Pallavi hook
+        from app.lyrics_sections import extract_sections
+
+        pallavi = (extract_sections(lyrics_body).get("pallavi") or song.title or "").strip()
+        short_defs = {
+            d["slot_index"]: d
+            for d in fill_shorts_pair(
+                title=song.title,
+                deity=song.deity,
+                daypart=daypart or "morning",
+                youtube_title=song.youtube_title,
+                youtube_description=song.youtube_description,
+                charanams=[pallavi] if pallavi else None,
+            )
+        }
+        for short in song.shorts:
+            d = short_defs.get(int(short.slot_index))
+            if not d:
+                continue
+            short.title = d["title"]
+            short.hook = d["hook"]
+            short.description = d["description"]
+        db.commit()
+        celery_progress(self, 100, "Lyrics ready", song_id=song_id)
+        return {"song_id": song_id, "title": song.title, "stage": song.stage}
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+@celery_app.task(name="app.workers.tasks.cleanup_published_media")
+def cleanup_published_media() -> dict[str, Any]:
+    """Daily: delete audio/video/thumbs for songs published before today (IST)."""
+    from app.db import SessionLocal
+    from app.services_cleanup import cleanup_published_media as run_cleanup
+
+    db = SessionLocal()
+    try:
+        return run_cleanup(db)
     finally:
         db.close()
 

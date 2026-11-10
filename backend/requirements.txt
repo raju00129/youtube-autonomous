@@ -7,6 +7,7 @@ alembic==1.14.0
 psycopg[binary]==3.2.3
 celery==5.4.0
 redis==5.2.1
+packaging>=24.0
 httpx==0.28.1
 python-multipart==0.0.20
 email-validator==2.2.0

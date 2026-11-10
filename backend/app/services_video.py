@@ -144,15 +144,20 @@ def normalize_main_clip_16x9(source: Path, out_path: Path) -> Path:
 
 
 def crop_kling_watermark(source: Path, out_path: Path | None = None) -> Path:
-    """Mild top-left crop to drop bottom-right Kling mark; keep true 16:9 SAR."""
+    """Drop bottom-right Kling mark while keeping the subject centered.
+
+    Left-anchored crops push characters to the right on 9:16 reels. Trim a bit
+    more from the right/bottom than the left, but keep the crop near center, then
+    force clean 1280x720 square pixels.
+    """
     src = Path(source)
     if not src.exists():
         raise RuntimeError(f"Missing video for watermark crop: {src}")
     dest = Path(out_path) if out_path else src.with_name(src.stem + "_nowm" + src.suffix)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    # Crop BR mark, then force clean 1280x720 square pixels (broken SAR looked like 144p).
+    # ~3% left / ~9% right / ~8% bottom — removes BR mark, subject stays centered.
     vf = (
-        f"crop=iw*0.88:ih*0.90:0:0,"
+        f"crop=iw*0.88:ih*0.92:iw*0.03:0,"
         f"scale={MAIN_WIDTH}:{MAIN_HEIGHT}:flags=lanczos,"
         f"setsar=1,format=yuv420p"
     )
@@ -1112,15 +1117,22 @@ def generate_visual_and_shorts(
         on_progress=on_progress,
     )
 
-    # Main = native-speed ~45s 16:9 (soft-loop only — no slow-mo)
+    # Main = native-speed ~45s 16:9 (soft-loop only — no slow-mo) + Kling mark crop
     report(on_progress, 90, "Building looped ~45s 16:9 main visual…")
-    main_path = out_dir / f"main_16x9_{uuid.uuid4().hex[:10]}.mp4"
+    looped_main = out_dir / f"main_16x9_{uuid.uuid4().hex[:10]}.mp4"
     main_target = float(getattr(get_settings(), "video_main_min_sec", MAIN_MIN_SEC) or MAIN_MIN_SEC)
     _, main_dur = smooth_extend_main_visual(
         raw_path,
-        main_path,
+        looped_main,
         target_sec=main_target,
     )
+    main_path = out_dir / f"{looped_main.stem}_nowm.mp4"
+    crop_kling_watermark(looped_main, main_path)
+    main_dur = _ffprobe_duration(main_path)
+    try:
+        looped_main.unlink(missing_ok=True)
+    except OSError:
+        pass
     song.video_clip_path = str(main_path)
     if song.stage in {
         "lyrics_draft",
@@ -1207,7 +1219,7 @@ def apply_manual_visual_upload(
 
     normalized = out_dir / f"main_manual_raw16x9_{uuid.uuid4().hex[:10]}.mp4"
     normalize_main_clip_16x9(source_path, normalized)
-    # Same as AI path: short uploads soft-loop at native speed (no slow-mo)
+    # Soft-loop at native speed (no slow-mo)
     looped = out_dir / f"main_manual_16x9_{uuid.uuid4().hex[:10]}.mp4"
     main_target = float(getattr(settings, "video_main_min_sec", MAIN_MIN_SEC) or MAIN_MIN_SEC)
     _, main_dur = smooth_extend_main_visual(
@@ -1215,7 +1227,29 @@ def apply_manual_visual_upload(
         looped,
         target_sec=main_target,
     )
-    # Drop Kling corner mark without breaking 16:9 SAR (bad SAR looked like 144p).
+
+    # Shorts from centered 16:9 BEFORE watermark crop — keeps characters dead-center
+    # on 9:16 (left-anchored watermark crop was pushing them right).
+    lyrics = _latest_lyrics(song)
+    shorts = ensure_shorts_rows(db, song, lyrics=lyrics)
+    short_still = _still_image_for_song(song)
+    cut_paths: list[dict] = []
+    for short in shorts:
+        out = out_dir / f"short_{short.slot_index}_manual_9x16_{uuid.uuid4().hex[:8]}.mp4"
+        _, short_dur, short_meta = cut_short_clip(
+            slot_index=short.slot_index,
+            video_source=looped,
+            out_path=out,
+            still_image=short_still,
+            song=song,
+            max_sec=SHORT_MAX_SEC,
+        )
+        short.clip_path = str(out)
+        short.final_clip_path = None
+        short.stage = "clip_ready"
+        cut_paths.append({**short_meta, "path": str(out), "duration_sec": short_dur})
+
+    # Main long-form: drop Kling BR mark with a center-biased crop + clean SAR.
     main_path = out_dir / f"{looped.stem}_nowm.mp4"
     crop_kling_watermark(looped, main_path)
     main_dur = _ffprobe_duration(main_path)
@@ -1244,25 +1278,6 @@ def apply_manual_visual_upload(
     # Stale muxed finals must not publish after a visual swap
     song.final_video_path = None
 
-    lyrics = _latest_lyrics(song)
-    shorts = ensure_shorts_rows(db, song, lyrics=lyrics)
-    short_still = _still_image_for_song(song)
-    cut_paths: list[dict] = []
-    for short in shorts:
-        out = out_dir / f"short_{short.slot_index}_manual_9x16_{uuid.uuid4().hex[:8]}.mp4"
-        _, short_dur, short_meta = cut_short_clip(
-            slot_index=short.slot_index,
-            video_source=main_path,
-            out_path=out,
-            still_image=short_still,
-            song=song,
-            max_sec=SHORT_MAX_SEC,
-        )
-        short.clip_path = str(out)
-        short.final_clip_path = None
-        short.stage = "clip_ready"
-        cut_paths.append({**short_meta, "path": str(out), "duration_sec": short_dur})
-
     db.flush()
     return {
         "video_clip_path": str(main_path),
@@ -1272,8 +1287,8 @@ def apply_manual_visual_upload(
         "engine": "manual_upload",
         "shorts": cut_paths,
         "note": (
-            f"Manual video uploaded ({label}) — silent 16:9 smooth-extended to "
-            f"~{int(main_target)}s; Short1=video 9:16 crop. "
+            f"Manual video uploaded ({label}) — native-speed 16:9 loop ~{int(main_target)}s "
+            f"+ Kling mark crop; Short1=true center 9:16 crop. "
             "AI generation skipped. Run Mix to attach audio before publish."
         ),
     }

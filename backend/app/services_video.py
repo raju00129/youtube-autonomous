@@ -116,7 +116,7 @@ def normalize_main_clip_16x9(source: Path, out_path: Path) -> Path:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     vf = (
         f"scale={MAIN_WIDTH}:{MAIN_HEIGHT}:force_original_aspect_ratio=decrease,"
-        f"pad={MAIN_WIDTH}:{MAIN_HEIGHT}:(ow-iw)/2:(oh-ih)/2"
+        f"pad={MAIN_WIDTH}:{MAIN_HEIGHT}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p"
     )
     _run_ffmpeg(
         [
@@ -130,9 +130,9 @@ def normalize_main_clip_16x9(source: Path, out_path: Path) -> Path:
             "-c:v",
             "libx264",
             "-preset",
-            "veryfast",
+            "fast",
             "-crf",
-            "20",
+            "17",
             "-pix_fmt",
             "yuv420p",
             "-movflags",
@@ -141,6 +141,45 @@ def normalize_main_clip_16x9(source: Path, out_path: Path) -> Path:
         ]
     )
     return out_path
+
+
+def crop_kling_watermark(source: Path, out_path: Path | None = None) -> Path:
+    """Mild top-left crop to drop bottom-right Kling mark; keep true 16:9 SAR."""
+    src = Path(source)
+    if not src.exists():
+        raise RuntimeError(f"Missing video for watermark crop: {src}")
+    dest = Path(out_path) if out_path else src.with_name(src.stem + "_nowm" + src.suffix)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    # Crop BR mark, then force clean 1280x720 square pixels (broken SAR looked like 144p).
+    vf = (
+        f"crop=iw*0.88:ih*0.90:0:0,"
+        f"scale={MAIN_WIDTH}:{MAIN_HEIGHT}:flags=lanczos,"
+        f"setsar=1,format=yuv420p"
+    )
+    _run_ffmpeg(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(src),
+            "-vf",
+            vf,
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "fast",
+            "-crf",
+            "17",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            str(dest),
+        ],
+        timeout=420,
+    )
+    return dest
 
 
 def _soft_loop_to_duration(
@@ -175,9 +214,9 @@ def _soft_loop_to_duration(
         "-c:v",
         "libx264",
         "-preset",
-        "veryfast",
+        "fast",
         "-crf",
-        "20",
+        "17",
         "-pix_fmt",
         "yuv420p",
         "-movflags",
@@ -529,12 +568,13 @@ def loop_clip_under(
         # Scale up to cover 9:16, then CENTER crop — keeps deity/chars in the middle
         vf = (
             f"scale={SHORT_WIDTH}:{SHORT_HEIGHT}:force_original_aspect_ratio=increase,"
-            f"crop={SHORT_WIDTH}:{SHORT_HEIGHT}:(iw-{SHORT_WIDTH})/2:(ih-{SHORT_HEIGHT})/2"
+            f"crop={SHORT_WIDTH}:{SHORT_HEIGHT}:(iw-{SHORT_WIDTH})/2:(ih-{SHORT_HEIGHT})/2,"
+            f"setsar=1,format=yuv420p"
         )
     else:
         vf = (
             f"scale={MAIN_WIDTH}:{MAIN_HEIGHT}:force_original_aspect_ratio=decrease,"
-            f"pad={MAIN_WIDTH}:{MAIN_HEIGHT}:(ow-iw)/2:(oh-ih)/2"
+            f"pad={MAIN_WIDTH}:{MAIN_HEIGHT}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p"
         )
 
     cmd = ["ffmpeg", "-y"]
@@ -551,9 +591,9 @@ def loop_clip_under(
         "-c:v",
         "libx264",
         "-preset",
-        "veryfast",
+        "fast",
         "-crf",
-        "20",
+        "17",
         "-pix_fmt",
         "yuv420p",
         "-movflags",
@@ -1168,15 +1208,20 @@ def apply_manual_visual_upload(
     normalized = out_dir / f"main_manual_raw16x9_{uuid.uuid4().hex[:10]}.mp4"
     normalize_main_clip_16x9(source_path, normalized)
     # Same as AI path: short uploads soft-loop at native speed (no slow-mo)
-    main_path = out_dir / f"main_manual_16x9_{uuid.uuid4().hex[:10]}.mp4"
+    looped = out_dir / f"main_manual_16x9_{uuid.uuid4().hex[:10]}.mp4"
     main_target = float(getattr(settings, "video_main_min_sec", MAIN_MIN_SEC) or MAIN_MIN_SEC)
     _, main_dur = smooth_extend_main_visual(
         normalized,
-        main_path,
+        looped,
         target_sec=main_target,
     )
+    # Drop Kling corner mark without breaking 16:9 SAR (bad SAR looked like 144p).
+    main_path = out_dir / f"{looped.stem}_nowm.mp4"
+    crop_kling_watermark(looped, main_path)
+    main_dur = _ffprobe_duration(main_path)
     try:
         normalized.unlink(missing_ok=True)
+        looped.unlink(missing_ok=True)
     except OSError:
         pass
 

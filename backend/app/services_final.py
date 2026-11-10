@@ -389,6 +389,8 @@ def mux_looped_av(
         if video_dur > 0 and video_dur < target:
             loops = max(0, math.ceil(target / video_dur) - 1)
 
+        # Copy video bitstream — visual was already encoded at 720p; re-encoding
+        # here washed detail and made uploads look soft / low-res on YouTube.
         cmd = ["ffmpeg", "-y"]
         if loops > 0:
             cmd += ["-stream_loop", str(loops)]
@@ -404,13 +406,7 @@ def mux_looped_av(
             "-map",
             "1:a:0",
             "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "20",
-            "-pix_fmt",
-            "yuv420p",
+            "copy",
             "-c:a",
             "aac",
             "-b:a",

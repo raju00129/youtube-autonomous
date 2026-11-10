@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     media_root: str = "/app/storage"
-    max_upload_bytes: int = 524_288_000
+    max_upload_bytes: int = 838_860_800  # 800MB — long Kling masters
 
     # LLM — Gemini for lyrics (text); Kling for image + video
     llm_provider: str = "gemini"  # gemini | cursor | openai | auto

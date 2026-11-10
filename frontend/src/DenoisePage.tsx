@@ -71,6 +71,13 @@ export default function DenoisePage() {
 
   async function onRemoveNoise() {
     if (!file || busy) return;
+    const maxMb = 800;
+    if (file.size > maxMb * 1024 * 1024) {
+      setError(
+        `File is ${(file.size / 1024 / 1024).toFixed(0)} MB — max is ${maxMb} MB. Compress or trim the video, then try again.`,
+      );
+      return;
+    }
     setBusy(true);
     setError(null);
     setNotice(null);
@@ -87,6 +94,11 @@ export default function DenoisePage() {
         data?: { job_id?: string; download_path?: string };
       };
       if (!res.ok) {
+        if (res.status === 413) {
+          throw new Error(
+            `File too large for upload (max ${maxMb} MB). Compress or trim, then try again.`,
+          );
+        }
         const detail = body.detail;
         throw new Error(
           typeof detail === "string"
@@ -142,7 +154,7 @@ export default function DenoisePage() {
 
       <section className="space-y-4 border border-ink/10 bg-white/55 p-6">
         <label className="block space-y-2">
-          <span className="text-sm text-ink/70">Video file (mp4, mov, mkv, webm)</span>
+          <span className="text-sm text-ink/70">Video file (mp4, mov, mkv, webm) — max 800 MB</span>
           <input
             ref={inputRef}
             type="file"

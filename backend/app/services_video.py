@@ -1198,6 +1198,36 @@ def generate_visual_and_shorts(
     }
 
 
+def _stream_copy_as_is(
+    source: Path,
+    out_path: Path,
+    *,
+    max_sec: float | None = None,
+    start_sec: float = 0.0,
+) -> Path:
+    """Remux video bitstream only — no scale, crop, pad, or re-encode."""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = ["ffmpeg", "-y"]
+    seek = max(0.0, float(start_sec or 0.0))
+    if seek > 0.05:
+        cmd += ["-ss", f"{seek:.3f}"]
+    cmd += ["-i", str(source)]
+    if max_sec is not None:
+        cmd += ["-t", f"{float(max_sec):.2f}"]
+    cmd += [
+        "-map",
+        "0:v:0",
+        "-c:v",
+        "copy",
+        "-an",
+        "-movflags",
+        "+faststart",
+        str(out_path),
+    ]
+    _run_ffmpeg(cmd, timeout=600)
+    return out_path
+
+
 def apply_manual_visual_upload(
     db: Session,
     song: SongProject,
@@ -1205,10 +1235,11 @@ def apply_manual_visual_upload(
     source_path: Path,
     original_filename: str | None = None,
 ) -> dict:
-    """Use an uploaded MP4 as the 16:9 visual — skip AI generation.
+    """Use an uploaded video as-is — skip AI generation and all visual effects.
 
-    Normalizes to silent 16:9, cuts 2 Shorts (9:16 center-crop, looped <30s),
-    sets stage to video_ready, and clears stale finals so Mix must re-run.
+    No scale, pad, crop, watermark trim, soft-loop, or re-encode on the main
+    clip. Shorts are a bitstream time-slice only (same pixels). Mix still
+    attaches song audio later with video copy.
     """
     if not source_path.exists() or source_path.stat().st_size < 1000:
         raise RuntimeError("Uploaded video file is missing or empty")
@@ -1217,40 +1248,48 @@ def apply_manual_visual_upload(
     out_dir = Path(settings.media_root) / "visuals" / str(song.id)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Keep the uploaded clip's full length — no soft-loop to ~45s.
-    # Normalize to silent 16:9 only so Mix / Shorts can use it as-is.
-    normalized = out_dir / f"main_manual_16x9_{uuid.uuid4().hex[:10]}.mp4"
-    normalize_main_clip_16x9(source_path, normalized)
+    main_path = out_dir / f"main_manual_as_is_{uuid.uuid4().hex[:10]}.mp4"
+    try:
+        _stream_copy_as_is(source_path, main_path)
+    except Exception as exc:  # noqa: BLE001
+        # Odd containers: keep the original bytes rather than re-encode.
+        logger.warning("stream-copy remux failed (%s) — copying bytes", exc)
+        main_path.write_bytes(source_path.read_bytes())
+    main_dur = _ffprobe_duration(main_path)
 
-    # Shorts from centered 16:9 BEFORE watermark crop — keeps characters dead-center
-    # on 9:16 (left-anchored watermark crop was pushing them right).
     lyrics = _latest_lyrics(song)
     shorts = ensure_shorts_rows(db, song, lyrics=lyrics)
-    short_still = _still_image_for_song(song)
     cut_paths: list[dict] = []
     for short in shorts:
-        out = out_dir / f"short_{short.slot_index}_manual_9x16_{uuid.uuid4().hex[:8]}.mp4"
-        _, short_dur, short_meta = cut_short_clip(
-            slot_index=short.slot_index,
-            video_source=normalized,
-            out_path=out,
-            still_image=short_still,
-            song=song,
-            max_sec=SHORT_MAX_SEC,
+        out = out_dir / f"short_{short.slot_index}_manual_as_is_{uuid.uuid4().hex[:8]}.mp4"
+        # Time-slice only — never crop/scale Shorts from a finished upload.
+        start = 0.0 if int(short.slot_index) <= 1 else short_visual_start_sec(
+            main_dur, slot_index=int(short.slot_index)
         )
+        try:
+            _stream_copy_as_is(
+                main_path,
+                out,
+                max_sec=SHORT_MAX_SEC,
+                start_sec=start,
+            )
+            short_dur = _ffprobe_duration(out)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Short %s as-is slice failed (%s) — reuse main", short.slot_index, exc)
+            out.write_bytes(main_path.read_bytes())
+            short_dur = main_dur
         short.clip_path = str(out)
         short.final_clip_path = None
         short.stage = "clip_ready"
-        cut_paths.append({**short_meta, "path": str(out), "duration_sec": short_dur})
-
-    # Main long-form: drop Kling BR mark with a center-biased crop + clean SAR.
-    main_path = out_dir / f"{normalized.stem}_nowm.mp4"
-    crop_kling_watermark(normalized, main_path)
-    main_dur = _ffprobe_duration(main_path)
-    try:
-        normalized.unlink(missing_ok=True)
-    except OSError:
-        pass
+        cut_paths.append(
+            {
+                "slot_index": int(short.slot_index),
+                "path": str(out),
+                "duration_sec": short_dur,
+                "method": "as_is_copy",
+                "visual_start_sec": start,
+            }
+        )
 
     song.video_clip_path = str(main_path)
     label = (original_filename or source_path.name).strip()[:120] or "manual.mp4"
@@ -1274,14 +1313,14 @@ def apply_manual_visual_upload(
     db.flush()
     return {
         "video_clip_path": str(main_path),
-        "resolution": "720p",
-        "aspect_ratio": "16:9",
+        "resolution": "original",
+        "aspect_ratio": "original",
         "duration_sec": main_dur,
         "engine": "manual_upload",
         "shorts": cut_paths,
         "note": (
-            f"Manual video uploaded ({label}) — kept original length (~{int(main_dur)}s) "
-            f"16:9 + Kling mark crop; Short1=true center 9:16 crop. "
+            f"Manual video uploaded ({label}) — kept as-is (~{int(main_dur)}s), "
+            "no scale/crop/watermark/re-encode. "
             "AI generation skipped. Run Mix to attach audio before publish."
         ),
     }

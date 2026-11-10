@@ -27,7 +27,7 @@ SHORT_WIDTH = 720
 SHORT_HEIGHT = 1280  # 9:16
 MAIN_WIDTH = 1280
 MAIN_HEIGHT = 720  # 16:9 Kling 2.5 Turbo
-# Long-form visual: extend short AI/KB clips smoothly to ~45s (then mux loops under song)
+# Long-form visual: soft-loop short AI/manual clips to ~45s at native speed (then mux loops under song)
 MAIN_MIN_SEC = 45.0
 
 
@@ -264,12 +264,10 @@ def smooth_extend_main_visual(
     *,
     target_sec: float | None = None,
 ) -> tuple[Path, float]:
-    """Build a calm ~45s (or target) 16:9 silent visual from a short clip.
+    """Build a 16:9 silent visual from a short clip at native speed.
 
-    Prefer continuous motion over obvious 10s repeats:
-    1) blend-interpolated slow-mo (≤~3.5×),
-    2) forward/reverse ping-pong,
-    3) soft-loop only if still short.
+    Keep the source motion as-is (no slow-mo / ping-pong). If the clip is
+    shorter than target, soft-loop it; final mux also loops under the song.
     """
     settings = get_settings()
     want = float(target_sec or getattr(settings, "video_main_min_sec", MAIN_MIN_SEC) or MAIN_MIN_SEC)
@@ -281,77 +279,7 @@ def smooth_extend_main_visual(
         normalize_main_clip_16x9(source, out_path)
         return out_path, _ffprobe_duration(out_path)
 
-    temps: list[Path] = []
-    work = source
-    try:
-        # Stretch toward ~half of target so ping-pong can finish near ~45s.
-        need_factor = want / src_dur
-        if need_factor > 1.08:
-            # Cap slow so motion stays calm; ping-pong covers the rest.
-            factor = min(need_factor / 2.0, 3.5)
-            factor = max(1.15, factor)
-            tmp_slow = out_path.parent / f".smooth_slow_{uuid.uuid4().hex[:8]}.mp4"
-            try:
-                _mild_slow_video(work, tmp_slow, factor=factor)
-                temps.append(tmp_slow)
-                work = tmp_slow
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Smooth slow-mo failed (%s) — continue without", exc)
-
-        work_dur = max(0.5, _ffprobe_duration(work))
-        if work_dur < want - 0.5:
-            tmp_pp = out_path.parent / f".smooth_pp_{uuid.uuid4().hex[:8]}.mp4"
-            try:
-                _ping_pong_video(work, tmp_pp)
-                temps.append(tmp_pp)
-                work = tmp_pp
-                # Second ping-pong if still well under target (e.g. very short source)
-                if _ffprobe_duration(work) < want * 0.85:
-                    tmp_pp2 = out_path.parent / f".smooth_pp2_{uuid.uuid4().hex[:8]}.mp4"
-                    _ping_pong_video(work, tmp_pp2)
-                    temps.append(tmp_pp2)
-                    work = tmp_pp2
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Ping-pong extend failed (%s) — soft-loop fallback", exc)
-
-        work_dur = max(0.5, _ffprobe_duration(work))
-        if work_dur >= want - 0.5:
-            # Trim to exact target if ping-pong overshot
-            if work_dur > want + 0.75:
-                _run_ffmpeg(
-                    [
-                        "ffmpeg",
-                        "-y",
-                        "-i",
-                        str(work),
-                        "-t",
-                        f"{want:.2f}",
-                        "-an",
-                        "-c:v",
-                        "libx264",
-                        "-preset",
-                        "veryfast",
-                        "-crf",
-                        "20",
-                        "-pix_fmt",
-                        "yuv420p",
-                        "-movflags",
-                        "+faststart",
-                        str(out_path),
-                    ],
-                    timeout=300,
-                )
-            else:
-                normalize_main_clip_16x9(work, out_path)
-        else:
-            _soft_loop_to_duration(work, out_path=out_path, target_sec=want)
-    finally:
-        for tmp in temps:
-            try:
-                tmp.unlink(missing_ok=True)
-            except OSError:
-                pass
-
+    _soft_loop_to_duration(source, out_path=out_path, target_sec=want)
     return out_path, _ffprobe_duration(out_path)
 
 def short_visual_start_sec(src_dur: float, *, slot_index: int) -> float:
@@ -1144,8 +1072,8 @@ def generate_visual_and_shorts(
         on_progress=on_progress,
     )
 
-    # Main = smooth ~45s 16:9 (mild slow + ping-pong — not jerky 6× stretch)
-    report(on_progress, 90, "Building smooth ~45s 16:9 main visual…")
+    # Main = native-speed ~45s 16:9 (soft-loop only — no slow-mo)
+    report(on_progress, 90, "Building looped ~45s 16:9 main visual…")
     main_path = out_dir / f"main_16x9_{uuid.uuid4().hex[:10]}.mp4"
     main_target = float(getattr(get_settings(), "video_main_min_sec", MAIN_MIN_SEC) or MAIN_MIN_SEC)
     _, main_dur = smooth_extend_main_visual(
@@ -1211,7 +1139,7 @@ def generate_visual_and_shorts(
         "shorts": cut_paths,
         "note": (
             f"{engine_label} once silent @ {res} 16:9; "
-            f"main smooth ~{int(main_dur)}s 16:9; "
+            f"main native-speed loop ~{int(main_dur)}s 16:9; "
             "Short1=video 9:16 crop, Short2=Ken Burns still "
             "(Pallavi hook audio)."
         ),
@@ -1239,7 +1167,7 @@ def apply_manual_visual_upload(
 
     normalized = out_dir / f"main_manual_raw16x9_{uuid.uuid4().hex[:10]}.mp4"
     normalize_main_clip_16x9(source_path, normalized)
-    # Same as AI path: short uploads get smooth ~45s (slow + ping-pong), not raw 10s loops
+    # Same as AI path: short uploads soft-loop at native speed (no slow-mo)
     main_path = out_dir / f"main_manual_16x9_{uuid.uuid4().hex[:10]}.mp4"
     main_target = float(getattr(settings, "video_main_min_sec", MAIN_MIN_SEC) or MAIN_MIN_SEC)
     _, main_dur = smooth_extend_main_visual(

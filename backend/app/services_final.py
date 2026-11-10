@@ -443,7 +443,7 @@ def mix_final_preview(db: Session, song: SongProject) -> dict:
     out_dir = Path(settings.media_root) / "finals" / str(song.id)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Safety net: never mux a short AI/manual clip as-is (hard 10s repeats)
+    # Safety net: soft-loop short clips at native speed (no slow-mo) before mux
     main_target = float(getattr(settings, "video_main_min_sec", MAIN_MIN_SEC) or MAIN_MIN_SEC)
     vis_dur = _ffprobe_duration(visual)
     if vis_dur < main_target - 1.0:
@@ -451,7 +451,7 @@ def mix_final_preview(db: Session, song: SongProject) -> dict:
             Path(settings.media_root)
             / "visuals"
             / str(song.id)
-            / f"main_16x9_smooth{int(main_target)}_{uuid.uuid4().hex[:10]}.mp4"
+            / f"main_16x9_loop{int(main_target)}_{uuid.uuid4().hex[:10]}.mp4"
         )
         visual, vis_dur = smooth_extend_main_visual(
             visual,
@@ -460,7 +460,7 @@ def mix_final_preview(db: Session, song: SongProject) -> dict:
         )
         song.video_clip_path = str(visual)
         logger.info(
-            "Smooth-extended main visual to %.1fs for song %s",
+            "Loop-extended main visual to %.1fs (native speed) for song %s",
             vis_dur,
             song.id,
         )

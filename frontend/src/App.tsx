@@ -870,10 +870,10 @@ function SongDetail() {
       <section className="grid gap-3 border border-ink/10 bg-white/55 p-6">
         <h2 className="font-display text-2xl">4. Visual (16:9 + Shorts 9:16)</h2>
         <p className="text-sm text-ink/65">
-          Prefer uploading a finished video when you already have a better clip — kept as-is
-          (no scale/crop). Or generate one silent <strong>16:9</strong> clip (Gemini first, Kling if
-          quota exhausted); AI Shorts use <strong>9:16 center-crop</strong> &lt;30s. On a schedule,
-          auto-prep skips generation when a clip is already present.
+          Prefer uploading a finished video when you already have a better clip — main kept as-is
+          (no scale/crop); Shorts still get <strong>9:16 center-crop</strong> &lt;30s. Or generate
+          one silent <strong>16:9</strong> clip (Gemini first, Kling if quota exhausted). On a
+          schedule, auto-prep skips generation when a clip is already present.
         </p>
         {song.visual?.clip_url ? (
           <video
@@ -907,8 +907,8 @@ function SongDetail() {
           <div className="flex flex-col gap-2 border-2 border-temple bg-temple/10 px-4 py-4">
             <p className="text-base font-semibold text-ink">Upload your own video (skip AI)</p>
             <p className="text-xs text-ink/60">
-              Use a finished clip (mp4 / mov / webm). Kept exactly as uploaded — no scale, crop,
-              watermark trim, or re-encode. Shorts are a time-slice only. No Gemini/Kling.
+              Use a finished clip (mp4 / mov / webm). Main stays exactly as uploaded; Shorts are cut
+              as 9:16 center-crop. No Gemini/Kling.
             </p>
             <label className="inline-flex w-fit cursor-pointer items-center gap-2 bg-temple px-5 py-2.5 text-sm font-semibold text-white has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-50">
               {busy ? "Uploading…" : "Choose video file…"}

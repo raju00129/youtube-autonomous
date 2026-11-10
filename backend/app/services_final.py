@@ -439,10 +439,13 @@ def mix_final_preview(db: Session, song: SongProject) -> dict:
     out_dir = Path(settings.media_root) / "finals" / str(song.id)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Safety net: soft-loop short clips at native speed (no slow-mo) before mux
+    # Manual uploads keep original length — mux loops under the song as needed.
+    # AI/short clips still soft-loop to ~45s so the visual stage isn't tiny.
+    prompt = (song.visual_prompt or "").strip().lower()
+    is_manual_upload = prompt.startswith("[manual_upload]")
     main_target = float(getattr(settings, "video_main_min_sec", MAIN_MIN_SEC) or MAIN_MIN_SEC)
     vis_dur = _ffprobe_duration(visual)
-    if vis_dur < main_target - 1.0:
+    if not is_manual_upload and vis_dur < main_target - 1.0:
         extended = (
             Path(settings.media_root)
             / "visuals"

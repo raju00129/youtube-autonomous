@@ -1217,16 +1217,10 @@ def apply_manual_visual_upload(
     out_dir = Path(settings.media_root) / "visuals" / str(song.id)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    normalized = out_dir / f"main_manual_raw16x9_{uuid.uuid4().hex[:10]}.mp4"
+    # Keep the uploaded clip's full length — no soft-loop to ~45s.
+    # Normalize to silent 16:9 only so Mix / Shorts can use it as-is.
+    normalized = out_dir / f"main_manual_16x9_{uuid.uuid4().hex[:10]}.mp4"
     normalize_main_clip_16x9(source_path, normalized)
-    # Soft-loop at native speed (no slow-mo)
-    looped = out_dir / f"main_manual_16x9_{uuid.uuid4().hex[:10]}.mp4"
-    main_target = float(getattr(settings, "video_main_min_sec", MAIN_MIN_SEC) or MAIN_MIN_SEC)
-    _, main_dur = smooth_extend_main_visual(
-        normalized,
-        looped,
-        target_sec=main_target,
-    )
 
     # Shorts from centered 16:9 BEFORE watermark crop — keeps characters dead-center
     # on 9:16 (left-anchored watermark crop was pushing them right).
@@ -1238,7 +1232,7 @@ def apply_manual_visual_upload(
         out = out_dir / f"short_{short.slot_index}_manual_9x16_{uuid.uuid4().hex[:8]}.mp4"
         _, short_dur, short_meta = cut_short_clip(
             slot_index=short.slot_index,
-            video_source=looped,
+            video_source=normalized,
             out_path=out,
             still_image=short_still,
             song=song,
@@ -1250,12 +1244,11 @@ def apply_manual_visual_upload(
         cut_paths.append({**short_meta, "path": str(out), "duration_sec": short_dur})
 
     # Main long-form: drop Kling BR mark with a center-biased crop + clean SAR.
-    main_path = out_dir / f"{looped.stem}_nowm.mp4"
-    crop_kling_watermark(looped, main_path)
+    main_path = out_dir / f"{normalized.stem}_nowm.mp4"
+    crop_kling_watermark(normalized, main_path)
     main_dur = _ffprobe_duration(main_path)
     try:
         normalized.unlink(missing_ok=True)
-        looped.unlink(missing_ok=True)
     except OSError:
         pass
 
@@ -1287,8 +1280,8 @@ def apply_manual_visual_upload(
         "engine": "manual_upload",
         "shorts": cut_paths,
         "note": (
-            f"Manual video uploaded ({label}) — native-speed 16:9 loop ~{int(main_target)}s "
-            f"+ Kling mark crop; Short1=true center 9:16 crop. "
+            f"Manual video uploaded ({label}) — kept original length (~{int(main_dur)}s) "
+            f"16:9 + Kling mark crop; Short1=true center 9:16 crop. "
             "AI generation skipped. Run Mix to attach audio before publish."
         ),
     }

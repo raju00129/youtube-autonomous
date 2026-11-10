@@ -566,25 +566,34 @@ def generate_scene_visual_and_shorts(
         fade_sec=0.8,
     )
 
-    # Assembled reel already matches song length — keep it for long-form (don't crush to 30s).
-    # If somehow short, smoothly extend to ~60s without jerky ultra-slow-mo.
-    report(on_progress, 90, "Preparing smooth 16:9 main visual…")
-    main_path = out_dir.parent / f"main_16x9_{uuid.uuid4().hex[:10]}.mp4"
+    # Assembled reel already matches song length — keep it for long-form.
+    # If short, soft-loop at native speed (no slow-mo), then Kling mark crop.
+    report(on_progress, 90, "Preparing looped 16:9 main visual…")
+    looped_main = out_dir.parent / f"main_16x9_{uuid.uuid4().hex[:10]}.mp4"
     assembled_dur = _ffprobe_duration(raw_path)
     main_min = float(getattr(settings, "video_main_min_sec", 45) or 45)
     if assembled_dur >= main_min - 0.5:
         from app.services_video import normalize_main_clip_16x9
 
-        normalize_main_clip_16x9(raw_path, main_path)
-        main_dur = _ffprobe_duration(main_path)
+        normalize_main_clip_16x9(raw_path, looped_main)
+        main_dur = _ffprobe_duration(looped_main)
     else:
         from app.services_video import smooth_extend_main_visual
 
         _, main_dur = smooth_extend_main_visual(
             raw_path,
-            main_path,
+            looped_main,
             target_sec=main_min,
         )
+    from app.services_video import crop_kling_watermark
+
+    main_path = out_dir.parent / f"{looped_main.stem}_nowm.mp4"
+    crop_kling_watermark(looped_main, main_path)
+    main_dur = _ffprobe_duration(main_path)
+    try:
+        looped_main.unlink(missing_ok=True)
+    except OSError:
+        pass
     song.video_clip_path = str(main_path)
     if song.stage in {
         "lyrics_draft",

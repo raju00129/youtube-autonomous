@@ -49,10 +49,11 @@ class Settings(BaseSettings):
     video_scene_animate: str = "kenburns"
     # Long-form silent visual target before audio mux (smooth extend, not hard 10s loop)
     video_main_min_sec: float = 45.0
-    # Mix: volume-only bump for quiet Suno/uploads (never changes tempo/pitch)
-    audio_target_mean_db: float = -12.0
-    audio_quiet_below_db: float = -16.0
-    audio_max_boost_db: float = 10.0
+    # Mix: two-pass EBU R128 loudness to YouTube's reference (never changes tempo/pitch)
+    audio_target_lufs: float = -14.0
+    audio_true_peak_db: float = -1.5
+    audio_target_lra: float = 11.0
+    audio_vocal_presence_db: float = 2.0
     # Auto pipeline: start video+mix this many minutes before publish_at
     prep_lead_minutes: int = 60
     # Allow late prep up to this many minutes after publish_at if mix missing

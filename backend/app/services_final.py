@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import re
@@ -122,10 +123,10 @@ def trim_leading_silence(
                     "-i",
                     str(audio),
                     "-vn",
+                    "-ar",
+                    "48000",
                     "-c:a",
-                    "aac",
-                    "-b:a",
-                    "192k",
+                    "pcm_s16le",
                     str(out_path),
                 ],
                 timeout=300,
@@ -142,10 +143,10 @@ def trim_leading_silence(
             "-i",
             str(audio),
             "-vn",
+            "-ar",
+            "48000",
             "-c:a",
-            "aac",
-            "-b:a",
-            "192k",
+            "pcm_s16le",
             str(out_path),
         ],
         timeout=300,
@@ -155,110 +156,85 @@ def trim_leading_silence(
     return out_path, lead
 
 
-def measure_mean_volume_db(audio: Path) -> float | None:
-    """Return ffmpeg volumedetect mean_volume in dB, or None on failure."""
-    cmd = [
-        "ffmpeg",
-        "-hide_banner",
-        "-i",
-        str(audio),
-        "-af",
-        "volumedetect",
-        "-f",
-        "null",
-        "-",
-    ]
+def _loudness_pre_filters() -> str:
+    """Rumble cut + gentle vocal-presence lift applied before loudnorm."""
+    settings = get_settings()
+    presence_db = float(getattr(settings, "audio_vocal_presence_db", 2.0) or 0.0)
+    chain = ["highpass=f=35"]
+    if presence_db > 0.05:
+        chain.append(f"equalizer=f=3000:t=q:w=1.0:g={presence_db:.2f}")
+    return ",".join(chain)
+
+
+def _measure_loudnorm(
+    audio: Path, *, pre: str, target_i: float, target_tp: float, target_lra: float
+) -> dict | None:
+    """Run loudnorm pass 1 and return its measured JSON stats."""
+    af = (
+        f"{pre},loudnorm=I={target_i}:TP={target_tp}:LRA={target_lra}"
+        ":print_format=json"
+    )
     try:
         proc = subprocess.run(
-            cmd,
+            ["ffmpeg", "-hide_banner", "-nostats", "-i", str(audio), "-vn", "-af", af, "-f", "null", "-"],
             capture_output=True,
             text=True,
-            timeout=180,
+            timeout=600,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        logger.warning("volumedetect failed: %s", exc)
+        logger.warning("loudnorm measure failed: %s", exc)
         return None
-    log = (proc.stderr or "") + "\n" + (proc.stdout or "")
-    m = re.search(r"mean_volume:\s*(-?[0-9.]+)\s*dB", log)
-    if not m:
+    log = proc.stderr or ""
+    start = log.rfind("{")
+    end = log.rfind("}")
+    if start < 0 or end <= start:
         return None
-    return float(m.group(1))
+    try:
+        stats = json.loads(log[start : end + 1])
+    except json.JSONDecodeError:
+        return None
+    needed = ("input_i", "input_tp", "input_lra", "input_thresh", "target_offset")
+    if not all(k in stats for k in needed):
+        return None
+    try:
+        if not math.isfinite(float(stats["input_i"])):
+            return None
+    except (TypeError, ValueError):
+        return None
+    return stats
 
 
-def maybe_boost_quiet_audio(
-    audio: Path,
-    out_path: Path,
-    *,
-    target_mean_db: float | None = None,
-    quiet_below_db: float | None = None,
-    max_boost_db: float | None = None,
-) -> tuple[Path, float]:
-    """Raise quiet tracks' loudness only — no tempo/pitch change.
+def normalize_loudness(audio: Path, out_path: Path) -> tuple[Path, float]:
+    """Two-pass EBU R128 loudness normalize to YouTube's ~-14 LUFS target.
 
-    Uses gain + soft limiter. Already-loud tracks are left alone (0 dB).
+    Lossless WAV output — the only lossy encode happens once at final mux.
+    Returns (path, applied gain in dB).
     """
     settings = get_settings()
-    target_mean_db = float(
-        target_mean_db
-        if target_mean_db is not None
-        else getattr(settings, "audio_target_mean_db", -12.0)
-    )
-    quiet_below_db = float(
-        quiet_below_db
-        if quiet_below_db is not None
-        else getattr(settings, "audio_quiet_below_db", -16.0)
-    )
-    max_boost_db = float(
-        max_boost_db
-        if max_boost_db is not None
-        else getattr(settings, "audio_max_boost_db", 10.0)
-    )
+    target_i = float(getattr(settings, "audio_target_lufs", -14.0))
+    target_tp = float(getattr(settings, "audio_true_peak_db", -1.5))
+    target_lra = float(getattr(settings, "audio_target_lra", 11.0))
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    mean = measure_mean_volume_db(audio)
-    if mean is None or mean >= quiet_below_db:
-        if audio.resolve() != out_path.resolve():
-            _run_ffmpeg(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-i",
-                    str(audio),
-                    "-vn",
-                    "-c:a",
-                    "aac",
-                    "-b:a",
-                    "192k",
-                    str(out_path),
-                ],
-                timeout=300,
-            )
-            return out_path, 0.0
-        return audio, 0.0
+    pre = _loudness_pre_filters()
 
-    boost = min(max_boost_db, max(0.0, target_mean_db - mean))
-    if boost < 1.0:
-        if audio.resolve() != out_path.resolve():
-            _run_ffmpeg(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-i",
-                    str(audio),
-                    "-vn",
-                    "-c:a",
-                    "aac",
-                    "-b:a",
-                    "192k",
-                    str(out_path),
-                ],
-                timeout=300,
-            )
-            return out_path, 0.0
-        return audio, 0.0
+    stats = _measure_loudnorm(
+        audio, pre=pre, target_i=target_i, target_tp=target_tp, target_lra=target_lra
+    )
+    if stats:
+        measured_i = float(stats["input_i"])
+        loudnorm = (
+            f"loudnorm=I={target_i}:TP={target_tp}:LRA={target_lra}"
+            f":measured_I={stats['input_i']}:measured_TP={stats['input_tp']}"
+            f":measured_LRA={stats['input_lra']}:measured_thresh={stats['input_thresh']}"
+            f":offset={stats['target_offset']}:linear=true"
+        )
+        gain = target_i - measured_i
+    else:
+        loudnorm = f"loudnorm=I={target_i}:TP={target_tp}:LRA={target_lra}"
+        measured_i = float("nan")
+        gain = 0.0
 
-    # Mild gain + limiter so peaks don't clip; keeps the original character.
-    af = f"volume={boost:.2f}dB,alimiter=limit=0.95:attack=5:release=50"
     _run_ffmpeg(
         [
             "ffmpeg",
@@ -267,19 +243,24 @@ def maybe_boost_quiet_audio(
             str(audio),
             "-vn",
             "-af",
-            af,
+            f"{pre},{loudnorm}",
+            "-ar",
+            "48000",
             "-c:a",
-            "aac",
-            "-b:a",
-            "192k",
+            "pcm_s16le",
             str(out_path),
         ],
-        timeout=300,
+        timeout=600,
     )
     if not out_path.exists() or out_path.stat().st_size < 500:
-        raise FinalMixError(f"Quiet-audio boost failed (+{boost:.1f}dB)")
-    logger.info("Boosted quiet audio +%.1fdB (mean was %.1fdB)", boost, mean)
-    return out_path, round(boost, 2)
+        raise FinalMixError("Loudness normalize failed")
+    logger.info(
+        "Loudness normalized %.1f LUFS → %.1f LUFS (%+.1f dB)",
+        measured_i,
+        target_i,
+        gain,
+    )
+    return out_path, round(gain, 2)
 
 
 def _latest_audio(song: SongProject) -> Path:
@@ -314,7 +295,7 @@ def _extract_audio_slice(
     duration_sec: float,
     out_path: Path,
 ) -> Path:
-    """Decode a precise audio slice to AAC — avoids multi-input -ss quirks."""
+    """Decode a precise lossless audio slice — avoids multi-input -ss quirks."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
     start = max(0.0, float(start_sec))
     dur = max(1.0, float(duration_sec))
@@ -328,10 +309,10 @@ def _extract_audio_slice(
         "-t",
         f"{dur:.3f}",
         "-vn",
+        "-ar",
+        "48000",
         "-c:a",
-        "aac",
-        "-b:a",
-        "192k",
+        "pcm_s16le",
         str(out_path),
     ]
     _run_ffmpeg(cmd, timeout=180)
@@ -372,7 +353,7 @@ def mux_looped_av(
     try:
         if start > 0.05 or (max_duration is not None and max_duration < audio_dur - 1):
             # Always pre-cut for Shorts (and any seek) so the mux cannot ignore -ss
-            tmp = Path(tempfile.mkdtemp(prefix="ragam_audio_")) / "slice.m4a"
+            tmp = Path(tempfile.mkdtemp(prefix="ragam_audio_")) / "slice.wav"
             slice_path = _extract_audio_slice(
                 audio=audio,
                 start_sec=start,
@@ -410,7 +391,9 @@ def mux_looped_av(
             "-c:a",
             "aac",
             "-b:a",
-            "192k",
+            "320k",
+            "-ar",
+            "48000",
             "-shortest",
             "-movflags",
             "+faststart",
@@ -465,7 +448,7 @@ def mix_final_preview(db: Session, song: SongProject) -> dict:
         )
 
     # Drop hush / empty intro so the video starts with real music
-    trimmed_audio = out_dir / f"audio_trim_{uuid.uuid4().hex[:8]}.m4a"
+    trimmed_audio = out_dir / f"audio_trim_{uuid.uuid4().hex[:8]}.wav"
     audio, lead_trimmed = trim_leading_silence(raw_audio, trimmed_audio)
     if lead_trimmed >= 0.4:
         logger.info(
@@ -474,9 +457,8 @@ def mix_final_preview(db: Session, song: SongProject) -> dict:
             song.id,
         )
 
-    # Quiet uploads: mild volume lift only (capped), skip if already loud enough
-    boosted_audio = out_dir / f"audio_boost_{uuid.uuid4().hex[:8]}.m4a"
-    audio, boost_db = maybe_boost_quiet_audio(audio, boosted_audio)
+    loud_audio = out_dir / f"audio_loud_{uuid.uuid4().hex[:8]}.wav"
+    audio, boost_db = normalize_loudness(audio, loud_audio)
     audio_dur = _ffprobe_duration(audio)
 
     main_out = out_dir / f"final_16x9_{uuid.uuid4().hex[:10]}.mp4"
@@ -532,7 +514,12 @@ def mix_final_preview(db: Session, song: SongProject) -> dict:
         if lead_trimmed >= 0.4
         else ""
     )
-    boost_note = f" Audio +{boost_db:.1f}dB." if boost_db >= 1.0 else ""
+    boost_note = (
+        f" Loudness normalized ({boost_db:+.1f}dB → "
+        f"{get_settings().audio_target_lufs:.0f} LUFS)."
+        if abs(boost_db) >= 0.5
+        else ""
+    )
     return {
         "final_video_path": str(main_path),
         "final_video_url": f"/api/v1/songs/{song.id}/final",

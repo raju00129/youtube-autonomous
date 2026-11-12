@@ -223,13 +223,14 @@ def normalize_loudness(audio: Path, out_path: Path) -> tuple[Path, float]:
     )
     if stats:
         measured_i = float(stats["input_i"])
-        loudnorm = (
-            f"loudnorm=I={target_i}:TP={target_tp}:LRA={target_lra}"
-            f":measured_I={stats['input_i']}:measured_TP={stats['input_tp']}"
-            f":measured_LRA={stats['input_lra']}:measured_thresh={stats['input_thresh']}"
-            f":offset={stats['target_offset']}:linear=true"
-        )
         gain = target_i - measured_i
+        # Static gain + peak limiter keeps the song's dynamics; loudnorm's
+        # dynamic fallback (big boosts) flattens LRA and sounds squashed.
+        limit = 10 ** (target_tp / 20.0)
+        loudnorm = (
+            f"volume={gain:.2f}dB,"
+            f"alimiter=limit={limit:.4f}:attack=5:release=60:level=0"
+        )
     else:
         loudnorm = f"loudnorm=I={target_i}:TP={target_tp}:LRA={target_lra}"
         measured_i = float("nan")

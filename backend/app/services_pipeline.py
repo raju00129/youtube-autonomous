@@ -30,7 +30,7 @@ def _aware(dt: datetime | None) -> datetime | None:
         return None
     if dt.tzinfo is None:
         return dt.replace(tzinfo=IST)
-    return dt
+    return dt.astimezone(IST)
 
 
 def _now() -> datetime:

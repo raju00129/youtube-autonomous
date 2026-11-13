@@ -32,8 +32,6 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     restart: unless-stopped
-    mem_limit: 2500m
-    memswap_limit: 2500m
     env_file: .env
     environment:
       DATABASE_URL: ${DATABASE_URL}
@@ -64,8 +62,6 @@ services:
       dockerfile: Dockerfile
     command: celery -A app.workers.celery_app worker --loglevel=info
     restart: unless-stopped
-    mem_limit: 3000m
-    memswap_limit: 3000m
     env_file: .env
     environment:
       DATABASE_URL: ${DATABASE_URL}

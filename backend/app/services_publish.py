@@ -135,7 +135,8 @@ def publish_song_to_youtube(
         url = uploaded["url"]
         song.youtube_video_id = video_id
         song.youtube_url = url
-        db.flush()
+        # Commit now: if a later step fails, a retry must reuse this upload.
+        db.commit()
         results["longform"] = {"video_id": video_id, "url": url, "reused": False}
 
     # Thumbnail (best-effort — channel may need verification for custom thumbs)
@@ -217,7 +218,7 @@ def publish_song_to_youtube(
         short.youtube_video_id = up["video_id"]
         short.youtube_url = up["url"]
         short.stage = "published" if short_privacy == "public" else "scheduled"
-        db.flush()
+        db.commit()
         results["shorts"].append(
             {
                 "slot_index": short.slot_index,

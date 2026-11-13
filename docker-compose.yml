@@ -1,6 +1,7 @@
 services:
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-ragam}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ragam}
@@ -17,6 +18,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     ports:
       - "6381:6379"
     healthcheck:
@@ -29,6 +31,9 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    restart: unless-stopped
+    mem_limit: 2500m
+    memswap_limit: 2500m
     env_file: .env
     environment:
       DATABASE_URL: ${DATABASE_URL}
@@ -58,6 +63,9 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     command: celery -A app.workers.celery_app worker --loglevel=info
+    restart: unless-stopped
+    mem_limit: 3000m
+    memswap_limit: 3000m
     env_file: .env
     environment:
       DATABASE_URL: ${DATABASE_URL}
@@ -78,6 +86,7 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     command: celery -A app.workers.celery_app beat --loglevel=info
+    restart: unless-stopped
     env_file: .env
     environment:
       DATABASE_URL: ${DATABASE_URL}
@@ -94,6 +103,7 @@ services:
     build:
       context: ./services/lyrics-agent
       dockerfile: Dockerfile
+    restart: unless-stopped
     env_file: .env
     environment:
       CURSOR_API_KEY: ${CURSOR_API_KEY}
@@ -117,6 +127,7 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+    restart: unless-stopped
     environment:
       VITE_API_BASE_URL: http://localhost:8010
     volumes:

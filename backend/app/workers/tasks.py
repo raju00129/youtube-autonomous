@@ -122,13 +122,21 @@ def song_prep_visual_mix(self, song_id: str) -> dict[str, Any]:
     from app.db import SessionLocal
     from app.models import SongProject
     from app.services_final import FinalMixError
-    from app.services_pipeline import run_prep_visual_mix
+    from app.services_pipeline import claim_song_stage, run_prep_visual_mix
     from app.providers.gemini_video import GeminiVideoError
     from app.providers.kling_video import KlingVideoError
 
     celery_progress(self, 1, "Auto-prep queued…", song_id=song_id)
     db = SessionLocal()
     try:
+        prev = claim_song_stage(
+            db,
+            uuid.UUID(song_id),
+            lock_stage="prep_running",
+            blocked={"published", "publish_running"},
+        )
+        if prev is None:
+            return {"song_id": song_id, "skipped": True, "reason": "locked_or_published"}
         song = db.scalar(
             select(SongProject)
             .where(SongProject.id == uuid.UUID(song_id))
@@ -138,18 +146,18 @@ def song_prep_visual_mix(self, song_id: str) -> dict[str, Any]:
                 selectinload(SongProject.music_generations),
             )
         )
-        if not song:
-            raise ValueError(f"Song not found: {song_id}")
-        if song.stage == "published" or song.youtube_video_id:
+        if song.youtube_video_id:
+            song.stage = prev
+            db.commit()
             return {"song_id": song_id, "skipped": True, "reason": "already_published"}
-        if song.stage == "prep_running":
-            return {"song_id": song_id, "skipped": True, "reason": "prep_already_running"}
 
         def on_progress(percent: int, message: str) -> None:
             celery_progress(self, percent, message, song_id=song_id)
 
         try:
-            result = run_prep_visual_mix(db, song, on_progress=on_progress)
+            result = run_prep_visual_mix(
+                db, song, on_progress=on_progress, prev_stage=prev
+            )
             db.commit()
             celery_progress(self, 100, "Auto-prep complete", song_id=song_id)
             return result
@@ -170,11 +178,21 @@ def song_auto_publish(self, song_id: str) -> dict[str, Any]:
     """Auto YouTube upload at publish_at (no-op if already published)."""
     from app.db import SessionLocal
     from app.models import SongProject
-    from app.services_publish import PublishError, publish_song_to_youtube
+    from app.services_pipeline import claim_song_stage
+    from app.services_publish import publish_song_to_youtube
 
     celery_progress(self, 1, "Auto-publish queued…", song_id=song_id)
     db = SessionLocal()
     try:
+        # Atomic claim: two queued publish tasks can no longer both upload.
+        prev = claim_song_stage(
+            db,
+            uuid.UUID(song_id),
+            lock_stage="publish_running",
+            blocked={"published", "prep_running"},
+        )
+        if prev is None:
+            return {"song_id": song_id, "skipped": True, "reason": "locked_or_published"}
         song = db.scalar(
             select(SongProject)
             .where(SongProject.id == uuid.UUID(song_id))
@@ -184,16 +202,6 @@ def song_auto_publish(self, song_id: str) -> dict[str, Any]:
                 selectinload(SongProject.music_generations),
             )
         )
-        if not song:
-            raise ValueError(f"Song not found: {song_id}")
-        if song.stage == "published" or song.youtube_video_id:
-            return {"song_id": song_id, "skipped": True, "reason": "already_published"}
-        if song.stage == "publish_running":
-            return {"song_id": song_id, "skipped": True, "reason": "publish_already_running"}
-
-        prev = song.stage
-        song.stage = "publish_running"
-        db.flush()
 
         def on_progress(percent: int, message: str) -> None:
             celery_progress(self, percent, message, song_id=song_id)
@@ -205,16 +213,18 @@ def song_auto_publish(self, song_id: str) -> dict[str, Any]:
             db.commit()
             celery_progress(self, 100, "Auto-publish complete", song_id=song_id)
             return published
-        except PublishError as exc:
-            song.stage = prev if prev != "publish_running" else "final_ready"
-            stamp = time.strftime("%Y-%m-%d %H:%M")
-            err = f"[auto-publish-error {stamp}] {exc}"
-            notes = (song.notes or "").strip()
-            song.notes = f"{notes}\n{err}".strip() if notes else err
-            db.commit()
-            raise
-        except Exception:
+        except Exception as exc:
+            # Uploaded ids are already committed by the publish service, so a
+            # retry reuses them instead of uploading a duplicate.
             db.rollback()
+            song = db.get(SongProject, uuid.UUID(song_id))
+            if song is not None and song.stage == "publish_running":
+                song.stage = prev
+                stamp = time.strftime("%Y-%m-%d %H:%M")
+                err = f"[auto-publish-error {stamp}] {exc}"
+                notes = (song.notes or "").strip()
+                song.notes = f"{notes}\n{err}".strip() if notes else err
+                db.commit()
             raise
     finally:
         db.close()

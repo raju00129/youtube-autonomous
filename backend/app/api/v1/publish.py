@@ -221,13 +221,28 @@ def schedule_or_publish_now(
                 status_code=400,
                 detail="YouTube not connected — open /api/v1/youtube/auth first",
             )
+        from app.services_pipeline import claim_song_stage
         from app.services_publish import PublishError, publish_song_to_youtube
 
+        prev = claim_song_stage(
+            db, song.id, lock_stage="publish_running", blocked={"published", "prep_running"}
+        )
+        if prev is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Publish or prep already in progress for this song — wait for it to finish",
+            )
         try:
             published = publish_song_to_youtube(db, song, publish_now=True)
-        except PublishError as exc:
+        except Exception as exc:
             db.rollback()
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+            db.refresh(song)
+            if song.stage == "publish_running":
+                song.stage = prev
+                db.commit()
+            if isinstance(exc, PublishError):
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
+            raise
 
         when = song.publish_at or datetime.now(tz=IST)
         if body.sync_shorts:

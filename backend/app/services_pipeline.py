@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
 
 LOCKED_STAGES = frozenset({"prep_running", "publish_running", "published"})
+RUNNING_STAGES = frozenset({"prep_running", "publish_running"})
+# Longer than the Celery hard time_limit (35 min), so a live task is never stolen.
+STALE_LOCK = timedelta(minutes=40)
 
 
 def _aware(dt: datetime | None) -> datetime | None:
@@ -32,6 +35,50 @@ def _aware(dt: datetime | None) -> datetime | None:
 
 def _now() -> datetime:
     return datetime.now(tz=IST)
+
+
+def lock_is_stale(song: SongProject) -> bool:
+    """A *_running stage left behind by a killed worker / VM reboot."""
+    if song.stage not in RUNNING_STAGES:
+        return False
+    updated = _aware(getattr(song, "updated_at", None))
+    return bool(updated and _now() - updated > STALE_LOCK)
+
+
+def claim_song_stage(
+    db: Session,
+    song_id,
+    *,
+    lock_stage: str,
+    blocked: frozenset[str] | set[str] = frozenset({"published"}),
+) -> str | None:
+    """Row-lock the song and move it into lock_stage in one committed step.
+
+    Returns the stage to restore on failure, or None when another task holds
+    it (or it is blocked). Concurrent callers serialize on the row lock, so
+    only one can win.
+    """
+    song = db.scalar(
+        select(SongProject)
+        .where(SongProject.id == song_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if song is None:
+        db.rollback()
+        raise ValueError(f"Song not found: {song_id}")
+    if song.stage in blocked or (
+        song.stage in RUNNING_STAGES and not lock_is_stale(song)
+    ):
+        db.rollback()
+        return None
+    prev = song.stage
+    if prev in RUNNING_STAGES:
+        logger.warning("Taking over stale %s lock on song %s", prev, song_id)
+        prev = "final_ready" if _has_final(song) else "music_ready"
+    song.stage = lock_stage
+    db.commit()
+    return prev
 
 
 def _has_lyrics(song: SongProject) -> bool:
@@ -59,12 +106,13 @@ def _has_final(song: SongProject) -> bool:
 
 
 def _shorts_final_ready(song: SongProject) -> bool:
-    ready = sum(
-        1
-        for s in (song.shorts or [])
-        if getattr(s, "final_clip_path", None) and Path(s.final_clip_path).exists()
+    """True once every active Short slot (<= SHORTS_COUNT) has a final clip."""
+    n_shorts = max(1, min(2, int(getattr(get_settings(), "shorts_count", 1) or 1)))
+    active = [s for s in (song.shorts or []) if int(s.slot_index) <= n_shorts]
+    return all(
+        getattr(s, "final_clip_path", None) and Path(s.final_clip_path).exists()
+        for s in active
     )
-    return ready >= 2
 
 
 def pipeline_status(song: SongProject) -> dict:
@@ -154,7 +202,9 @@ def songs_due_for_prep(db: Session) -> list[SongProject]:
     now = _now()
     due: list[SongProject] = []
     for song in load_songs_for_pipeline(db):
-        if song.stage in LOCKED_STAGES:
+        if song.youtube_video_id:
+            continue
+        if song.stage in LOCKED_STAGES and not lock_is_stale(song):
             continue
         if _has_final(song) and _shorts_final_ready(song):
             continue
@@ -174,9 +224,11 @@ def songs_due_for_publish(db: Session) -> list[SongProject]:
     now = _now()
     due: list[SongProject] = []
     for song in load_songs_for_pipeline(db):
-        if song.stage in {"publish_running", "published"} or song.youtube_video_id:
+        # A song with a long-form id but not "published" had a partial upload;
+        # keep it due so the task reuses that video and finishes the Shorts.
+        if song.stage == "published":
             continue
-        if song.stage == "prep_running":
+        if song.stage in RUNNING_STAGES and not lock_is_stale(song):
             continue
         publish_at = _aware(song.publish_at)
         if not publish_at or publish_at > now:
@@ -195,9 +247,10 @@ def run_prep_visual_mix(
     song: SongProject,
     *,
     on_progress: ProgressFn | None = None,
+    prev_stage: str | None = None,
 ) -> dict:
     """Generate visual (if needed) + always ensure final A/V mix."""
-    prev_stage = song.stage
+    prev_stage = prev_stage or song.stage
     song.stage = "prep_running"
     db.flush()
 

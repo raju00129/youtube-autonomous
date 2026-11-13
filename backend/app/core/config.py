@@ -108,6 +108,8 @@ class Settings(BaseSettings):
     youtube_channel_id: str = ""
     youtube_channel_handle: str = ""
     youtube_channel_url: str = ""
+    # Self-disclose "Altered or synthetic content" (AI music/visuals) on every upload
+    youtube_contains_synthetic_media: bool = True
 
     n8n_webhook_secret: str = ""
 

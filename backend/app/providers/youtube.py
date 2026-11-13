@@ -333,6 +333,7 @@ def upload_video(
     privacy_status: str = "public",
     publish_at: str | None = None,
     made_for_kids: bool = False,
+    contains_synthetic_media: bool | None = None,
 ) -> dict[str, Any]:
     """Resumable upload. Returns {video_id, url, raw}."""
     from googleapiclient.errors import HttpError
@@ -347,9 +348,15 @@ def upload_video(
     if privacy not in {"public", "unlisted", "private"}:
         privacy = "public"
 
+    if contains_synthetic_media is None:
+        contains_synthetic_media = bool(
+            getattr(get_settings(), "youtube_contains_synthetic_media", True)
+        )
     status: dict[str, Any] = {
         "privacyStatus": privacy,
         "selfDeclaredMadeForKids": bool(made_for_kids),
+        # YouTube "Altered or synthetic content" disclosure (AI music/visuals)
+        "containsSyntheticMedia": bool(contains_synthetic_media),
     }
     # Scheduling requires private + publishAt (RFC 3339)
     if publish_at and privacy == "private":
@@ -469,6 +476,44 @@ def update_video_snippet(
         return youtube.videos().update(part="snippet", body=body).execute()
     except HttpError as exc:
         raise YouTubeUploadError(f"Video metadata update failed: {exc}") from exc
+
+
+def set_synthetic_media_flag(*, video_id: str, value: bool = True) -> dict[str, Any]:
+    """Set the A/S disclosure on an existing video, keeping its other status fields.
+
+    videos.update(part=status) replaces the whole status object, so the current
+    writable fields are read back and re-sent unchanged.
+    """
+    from googleapiclient.errors import HttpError
+
+    if not video_id:
+        raise YouTubeUploadError("video_id required")
+    youtube = _yt_service()
+    try:
+        items = youtube.videos().list(part="status", id=video_id).execute().get("items") or []
+        if not items:
+            raise YouTubeUploadError(f"Video not found: {video_id}")
+        current = items[0].get("status") or {}
+        if bool(current.get("containsSyntheticMedia")) == bool(value):
+            return {"video_id": video_id, "changed": False}
+        status: dict[str, Any] = {
+            k: current[k]
+            for k in (
+                "privacyStatus",
+                "embeddable",
+                "license",
+                "publicStatsViewable",
+                "selfDeclaredMadeForKids",
+            )
+            if k in current
+        }
+        if current.get("privacyStatus") == "private" and current.get("publishAt"):
+            status["publishAt"] = current["publishAt"]
+        status["containsSyntheticMedia"] = bool(value)
+        youtube.videos().update(part="status", body={"id": video_id, "status": status}).execute()
+        return {"video_id": video_id, "changed": True}
+    except HttpError as exc:
+        raise YouTubeUploadError(f"Synthetic-media flag update failed: {exc}") from exc
 
 
 def short_related_description(

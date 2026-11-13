@@ -110,6 +110,8 @@ class Settings(BaseSettings):
     youtube_channel_url: str = ""
     # Self-disclose "Altered or synthetic content" (AI music/visuals) on every upload
     youtube_contains_synthetic_media: bool = True
+    # Video + spoken-audio language on YouTube (drives auto-caption language)
+    youtube_language: str = "te"
 
     n8n_webhook_secret: str = ""
 

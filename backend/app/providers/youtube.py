@@ -323,6 +323,36 @@ def _parse_tags(raw: str | None) -> list[str]:
     return tags
 
 
+def _language_fields() -> dict[str, str]:
+    """Video language + spoken-audio language; auto captions follow the audio language."""
+    lang = (getattr(get_settings(), "youtube_language", "te") or "te").strip()
+    return {"defaultLanguage": lang, "defaultAudioLanguage": lang}
+
+
+def set_video_language(*, video_id: str, snippet: dict[str, Any]) -> bool:
+    """Re-save an existing video's snippet with the channel language. Returns True if changed."""
+    from googleapiclient.errors import HttpError
+
+    wanted = _language_fields()
+    if all(snippet.get(k) == v for k, v in wanted.items()):
+        return False
+    body_snippet: dict[str, Any] = {
+        "title": snippet.get("title") or "Ragam Spiritual Telugu",
+        "description": snippet.get("description") or "",
+        "categoryId": snippet.get("categoryId") or "10",
+        **wanted,
+    }
+    if snippet.get("tags"):
+        body_snippet["tags"] = snippet["tags"]
+    try:
+        _yt_service().videos().update(
+            part="snippet", body={"id": video_id, "snippet": body_snippet}
+        ).execute()
+    except HttpError as exc:
+        raise YouTubeUploadError(f"Language update failed: {exc}") from exc
+    return True
+
+
 def upload_video(
     *,
     file_path: str | Path,
@@ -368,6 +398,7 @@ def upload_video(
             "description": (description or "")[:4900],
             "tags": tag_list,
             "categoryId": category_id,
+            **_language_fields(),
         },
         "status": status,
     }
@@ -470,6 +501,9 @@ def update_video_snippet(
             "description": (description or "")[:4900],
             "tags": tag_list,
             "categoryId": category_id,
+            # snippet updates replace the whole snippet; omitting these resets
+            # the audio language (Shorts fell back to en-US → wrong auto captions)
+            **_language_fields(),
         },
     }
     try:

@@ -238,6 +238,8 @@ def songs_due_for_prep(db: Session) -> list[SongProject]:
             if int(s.slot_index) <= max(1, min(2, int(getattr(get_settings(), "shorts_count", 1) or 1)))
         ):
             continue
+        if song.stage == "held":
+            continue
         if song.stage in LOCKED_STAGES and not lock_is_stale(song):
             continue
         if _deliverable_ready(song):
@@ -257,10 +259,16 @@ def songs_due_for_prep(db: Session) -> list[SongProject]:
 def songs_due_for_publish(db: Session) -> list[SongProject]:
     now = _now()
     due: list[SongProject] = []
+    from app.services_publish import (
+        daypart_for_song,
+        publish_targets_for_daypart,
+        same_day_morning_longform,
+    )
+
     for song in load_songs_for_pipeline(db):
         # A song with a long-form id but not "published" had a partial upload;
         # keep it due so the task reuses that video and finishes the Shorts.
-        if song.stage == "published":
+        if song.stage == "published" or song.stage == "held":
             continue
         if song.stage in RUNNING_STAGES and not lock_is_stale(song):
             continue
@@ -272,6 +280,16 @@ def songs_due_for_publish(db: Session) -> list[SongProject]:
         if not song.youtube_playlist_id:
             logger.info("skip auto-publish %s — no playlist", song.id)
             continue
+        # Evening Short waits until same-day morning long video is live
+        targets = publish_targets_for_daypart(daypart_for_song(song))
+        if targets["shorts"] and not targets["longform"]:
+            morning_id, _ = same_day_morning_longform(db, song)
+            if not morning_id:
+                logger.info(
+                    "skip auto-publish %s — evening Short waiting for morning long video",
+                    song.id,
+                )
+                continue
         due.append(song)
     return due
 

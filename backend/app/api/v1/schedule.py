@@ -1,4 +1,4 @@
-"""Weekly schedule — 2 songs/day (morning + evening); each → 2 Shorts from same A/V."""
+"""Weekly schedule — morning long video + evening Short (1 upload each)."""
 
 from __future__ import annotations
 
@@ -18,10 +18,16 @@ from app.models import ScheduleSlot, ShortProject, SongProject
 from app.playlists import apply_playlists_to_song
 from app.providers import llm
 from app.providers import youtube as yt
+from app.services_publish import publish_targets_for_daypart
 
 router = APIRouter(prefix="/schedule", tags=["schedule"])
 IST = ZoneInfo("Asia/Kolkata")
 DAYPARTS = ("morning", "evening")
+
+PLAN_NOTE = (
+    "Each day: morning = 1 long video; evening = 1 Short "
+    "(Short links to that morning’s full song)."
+)
 
 
 def _monday_of(d: date) -> date:
@@ -37,13 +43,41 @@ def _default_publish_at(slot_date: date, daypart: str) -> datetime:
     )
 
 
+def _format_for_daypart(daypart: str) -> str:
+    targets = publish_targets_for_daypart(daypart)
+    return "longform" if targets["longform"] else "short"
+
+
 def _slot_payload(slot: ScheduleSlot) -> dict:
     daypart = slot.daypart or "morning"
+    fmt = _format_for_daypart(daypart)
     song = getattr(slot, "song", None)
+    short_url = None
+    short_id = None
+    if song and fmt == "short":
+        for sh in sorted(song.shorts or [], key=lambda s: s.slot_index):
+            if sh.youtube_video_id:
+                short_id = sh.youtube_video_id
+                short_url = sh.youtube_url or f"https://www.youtube.com/shorts/{short_id}"
+                break
     published = bool(
         slot.status == "published"
-        or (song and (song.stage == "published" or song.youtube_video_id))
+        or slot.status == "skipped"
+        or (
+            song
+            and (
+                song.stage == "published"
+                or (fmt == "longform" and song.youtube_video_id)
+                or (fmt == "short" and short_id)
+            )
+        )
     )
+    # Skipped slots are not "published" on YouTube
+    if slot.status == "skipped":
+        published = False
+    youtube_url = short_url if fmt == "short" else (song.youtube_url if song else None)
+    youtube_video_id = short_id if fmt == "short" else (song.youtube_video_id if song else None)
+    format_label = "long video" if fmt == "longform" else "Short"
     return {
         "id": str(slot.id),
         "week_start": slot.week_start.isoformat(),
@@ -51,6 +85,8 @@ def _slot_payload(slot: ScheduleSlot) -> dict:
         "weekday": slot.slot_date.strftime("%A"),
         "daypart": daypart,
         "daypart_label": DAYPART_FLAVOR.get(daypart, {}).get("label", daypart),
+        "publish_format": fmt,
+        "format_label": format_label,
         "publish_at": slot.publish_at.isoformat() if slot.publish_at else None,
         "title_hint": slot.title_hint,
         "topic_override": slot.topic_override,
@@ -60,13 +96,14 @@ def _slot_payload(slot: ScheduleSlot) -> dict:
         "song_id": str(slot.song_id) if slot.song_id else None,
         "song_title": (song.title if song else None),
         "song_stage": (song.stage if song else None),
-        "youtube_url": (song.youtube_url if song else None),
-        "youtube_video_id": (song.youtube_video_id if song else None),
+        "youtube_url": youtube_url,
+        "youtube_video_id": youtube_video_id,
         "auto_deity": slot.auto_deity,
         "auto_topic": slot.auto_topic,
         "auto_mood": slot.auto_mood,
         "notes": slot.notes,
-        "shorts_per_song": 2,
+        "uploads": 1,
+        "shorts_per_song": 1 if fmt == "short" else 0,
         "suggestion": suggest_for_date(slot.slot_date, daypart=daypart),
     }
 
@@ -103,7 +140,9 @@ def get_week(week_start: date, db: Session = Depends(get_db)) -> dict:
     slots = db.scalars(
         select(ScheduleSlot)
         .where(ScheduleSlot.week_start == monday)
-        .options(selectinload(ScheduleSlot.song))
+        .options(
+            selectinload(ScheduleSlot.song).selectinload(SongProject.shorts),
+        )
         .order_by(ScheduleSlot.slot_date, ScheduleSlot.daypart.desc())
         # morning before evening: 'evening' < 'morning' alphabetically false
         # use custom: morning first via CASE — simpler sort in Python
@@ -120,13 +159,11 @@ def get_week(week_start: date, db: Session = Depends(get_db)) -> dict:
         "data": {
             "week_start": monday.isoformat(),
             "plan": {
+                "uploads_per_day": 2,
+                "longform_per_day": 1,
+                "shorts_per_day": 1,
                 "songs_per_day": 2,
-                "shorts_per_song": 2,
-                "shorts_per_day": 4,
-                "note": (
-                    "Morning song → 2 Short clips from same A/V at morning time; "
-                    "Evening song → 2 Short clips from same A/V at evening time."
-                ),
+                "note": PLAN_NOTE,
             },
             "suggestions": week_suggestions(monday),
             "slots": [_slot_payload(s) for s in slots_sorted],
@@ -142,7 +179,7 @@ def ensure_week(body: WeekEnsureRequest, db: Session = Depends(get_db)) -> dict:
     existing_rows = db.scalars(
         select(ScheduleSlot)
         .where(ScheduleSlot.week_start == monday)
-        .options(selectinload(ScheduleSlot.song))
+        .options(selectinload(ScheduleSlot.song).selectinload(SongProject.shorts))
     ).all()
     existing = {(s.slot_date, (s.daypart or "morning")): s for s in existing_rows}
     created = 0
@@ -189,8 +226,10 @@ def ensure_week(body: WeekEnsureRequest, db: Session = Depends(get_db)) -> dict:
     payload["meta"] = {
         "created_slots": created,
         "refreshed_slots": refreshed,
-        "songs_per_day": 2,
-        "shorts_per_day": 4,
+        "uploads_per_day": 2,
+        "longform_per_day": 1,
+        "shorts_per_day": 1,
+        "note": PLAN_NOTE,
     }
     return payload
 
@@ -245,7 +284,7 @@ def materialize_slot(
     body: MaterializeRequest,
     db: Session = Depends(get_db),
 ) -> dict:
-    """Create 1 song + Cursor lyrics + 2 Shorts (clips from same future A/V)."""
+    """Create song project for this daypart (morning long / evening Short)."""
     slot = db.get(ScheduleSlot, slot_id)
     if not slot:
         raise HTTPException(status_code=404, detail="Slot not found")
@@ -253,6 +292,7 @@ def materialize_slot(
         raise HTTPException(status_code=409, detail="Slot already has a song")
 
     daypart = slot.daypart or "morning"
+    fmt = _format_for_daypart(daypart)
     suggestion = suggest_for_date(slot.slot_date, daypart=daypart)
     deity = slot.deity_override or slot.auto_deity or suggestion["deity"]
     raw_topic = slot.topic_override or slot.auto_topic or suggestion["topic"]
@@ -386,7 +426,7 @@ def materialize_slot(
     slot = db.scalar(
         select(ScheduleSlot)
         .where(ScheduleSlot.id == slot_id)
-        .options(selectinload(ScheduleSlot.song))
+        .options(selectinload(ScheduleSlot.song).selectinload(SongProject.shorts))
     )
     assert slot is not None
     return {
@@ -412,15 +452,28 @@ def materialize_slot(
                 }
                 for s in song.shorts
             ],
-            "next": [
-                "Lyrics generate in the background — open the song when ready",
-                "Approve lyrics → Suno → upload MP3 (one audio for this daypart)",
-                "Generate visual once; cut 2 Short clips from the same audio+video",
-                "Publish long-form + 2 Shorts at this daypart time; Shorts link to main",
-            ],
+            "publish_format": fmt,
+            "next": (
+                [
+                    "Lyrics generate in the background — open the song when ready",
+                    "Approve lyrics → Suno → upload MP3",
+                    "Generate 16:9 visual + final mix",
+                    "Publish morning long video only (no Short)",
+                ]
+                if fmt == "longform"
+                else [
+                    "Lyrics generate in the background — open the song when ready",
+                    "Approve lyrics → Suno → upload MP3",
+                    "Generate visual + cut 1 Short (9:16)",
+                    "Publish evening Short only (links to that morning’s long video)",
+                ]
+            ),
             "note": (
-                "Song created. Gemini lyrics are generating in the background — "
-                "you can create another slot now."
+                (
+                    "Morning long-video song created. Lyrics generating in background."
+                    if fmt == "longform"
+                    else "Evening Short song created. Lyrics generating in background."
+                )
                 if lyrics_job_id
                 else "Song created without lyrics."
             ),

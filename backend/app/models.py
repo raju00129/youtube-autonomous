@@ -144,7 +144,7 @@ class ShortProject(Base):
 
 
 class ScheduleSlot(Base):
-    """Weekly plan: 2 songs/day (morning + evening); each song → 2 Shorts from same A/V."""
+    """Weekly plan: morning long video + evening Short (one upload each)."""
 
     __tablename__ = "schedule_slots"
 

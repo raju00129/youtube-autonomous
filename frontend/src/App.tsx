@@ -1347,7 +1347,7 @@ function SongDetail() {
             disabled={busy || !song.readiness?.publishable}
             title={
               song.readiness?.publishable
-                ? "Upload long-form + Shorts to YouTube now"
+                ? "Upload this daypart’s target to YouTube now"
                 : `Missing: ${(song.readiness?.missing || []).join(", ") || "final mix / playlist"}`
             }
             onClick={() =>
@@ -1355,7 +1355,7 @@ function SongDetail() {
                 setBusy(true);
                 setError(null);
                 setNotice(
-                  "Uploading to YouTube (long-form + Shorts) — keep this tab open, usually 1–5 min…",
+                  "Uploading to YouTube — keep this tab open, usually 1–5 min…",
                 );
                 try {
                   const res = await fetch(`${API_BASE}/api/v1/publish/songs/${song.id}/schedule`, {
@@ -1535,6 +1535,8 @@ type ScheduleSlot = {
   weekday: string;
   daypart?: string;
   daypart_label?: string;
+  publish_format?: "longform" | "short" | string;
+  format_label?: string;
   publish_at?: string | null;
   title_hint?: string | null;
   status: string;
@@ -1683,7 +1685,7 @@ function WeekSchedule() {
     <main className="mx-auto flex max-w-5xl flex-col gap-8 px-6 py-12">
       <header className="space-y-2">
         <p className="text-sm uppercase tracking-[0.25em] text-temple/80">Weekly plan</p>
-        <h1 className="font-display text-4xl text-ink">2 songs / day · 4 Shorts</h1>
+        <h1 className="font-display text-4xl text-ink">1 long video + 1 Short / day</h1>
         <p className="max-w-2xl text-ink/70">{planNote}</p>
       </header>
 
@@ -1740,7 +1742,7 @@ function WeekSchedule() {
                 {weekday} · {day.date}
               </h2>
               <p className="mb-4 text-sm text-ink/55">
-                Mood: {day.slots[0]?.auto_mood ?? "—"} · Morning & evening use different deities
+                Mood: {day.slots[0]?.auto_mood ?? "—"} · Morning long video · Evening Short
               </p>
               <div className="grid gap-3 md:grid-cols-2">
                 {day.slots.map((slot) => (
@@ -1749,7 +1751,9 @@ function WeekSchedule() {
                     className={`relative grid gap-2 border p-3 ${
                       slot.published
                         ? "border-temple/40 bg-temple/5"
-                        : "border-ink/10 bg-white/80"
+                        : slot.status === "skipped"
+                          ? "border-ink/10 bg-ink/5 opacity-70"
+                          : "border-ink/10 bg-white/80"
                     }`}
                   >
                     {slot.published && (
@@ -1757,9 +1761,18 @@ function WeekSchedule() {
                         PUBLISHED
                       </div>
                     )}
+                    {slot.status === "skipped" && (
+                      <div className="pointer-events-none absolute right-2 top-2 border border-ink/30 px-2 py-0.5 font-display text-xs tracking-wider text-ink/60">
+                        SKIPPED
+                      </div>
+                    )}
                     <p className="font-medium text-ink pr-20">
                       {slot.daypart_label ?? slot.daypart ?? "slot"} ·{" "}
-                      {slot.auto_deity ?? slot.suggestion?.deity ?? "—"} · 1 song → 2 Shorts
+                      {slot.auto_deity ?? slot.suggestion?.deity ?? "—"} ·{" "}
+                      {slot.format_label ??
+                        (slot.publish_format === "short" || slot.daypart === "evening"
+                          ? "Short"
+                          : "long video")}
                     </p>
                     {slot.song_title && (
                       <p className="text-sm text-ink/70 line-clamp-2">{slot.song_title}</p>
@@ -1796,7 +1809,9 @@ function WeekSchedule() {
                         rel="noreferrer"
                         className="bg-temple px-3 py-2 text-center text-sm font-medium text-white"
                       >
-                        Watch on YouTube
+                        {slot.publish_format === "short" || slot.daypart === "evening"
+                          ? "Watch Short"
+                          : "Watch long video"}
                       </a>
                     ) : slot.song_id ? (
                       <Link
@@ -1815,7 +1830,11 @@ function WeekSchedule() {
                         onClick={() => void materialize(slot.id)}
                         className="bg-ink px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
                       >
-                        {busyIds[slot.id] ? "Starting…" : "Create song + 2 Shorts"}
+                        {busyIds[slot.id]
+                          ? "Starting…"
+                          : slot.publish_format === "short" || slot.daypart === "evening"
+                            ? "Create evening Short"
+                            : "Create morning video"}
                       </button>
                     )}
                   </div>
@@ -2005,8 +2024,8 @@ function ReadyQueue() {
                         disabled={!song.readiness.publishable || busyId === song.id}
                         title={
                           song.readiness.publishable
-                            ? "Upload long-form + Shorts to YouTube"
-                            : `Need final mix + playlist. Missing: ${song.readiness.missing.join(", ")}`
+                            ? "Upload this daypart’s target to YouTube"
+                            : `Need deliverable + playlist. Missing: ${song.readiness.missing.join(", ")}`
                         }
                         onClick={() => void schedule(song.id, { publish_now: true })}
                         className="bg-temple px-3 py-2 text-sm font-medium text-white disabled:opacity-50"

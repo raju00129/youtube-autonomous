@@ -217,18 +217,20 @@ DAYPART_FLAVOR = {
     # Channel strategy (Nov 2026): morning = 1 long video only; evening = 1 Short only.
     # Long-form performs better ~6 AM; Shorts perform better ~7 PM.
     "morning": {
-        "label": "Morning (మంగళారతి / early devotion)",
+        "label": "Morning · long video",
         "topic_prefix": _MORNING_PREFIXES[0],
         "default_hour": 6,
         "default_minute": 0,
-        "short2_stagger_hours": 6,  # → ~12 PM Shorts lunch-scroll peak
+        "short2_stagger_hours": 6,
+        "publish_format": "longform",
     },
     "evening": {
-        "label": "Evening (సాయంకాల హారతి)",
+        "label": "Evening · Short",
         "topic_prefix": _EVENING_PREFIXES[0],
         "default_hour": 19,
         "default_minute": 0,
-        "short2_stagger_hours": 0,  # same evening window — Shorts peak 7–9 PM
+        "short2_stagger_hours": 0,
+        "publish_format": "short",
     },
 }
 
@@ -314,8 +316,10 @@ def suggest_for_date(
         "visual_style": visual,
         "pantheon": sorted(HINDU_DEITIES.keys()),
         "shorts_plan": (
-            "Same long-form audio + looping visual → cut 2 Shorts clips; "
-            "publish both Shorts at this daypart time with link to main song."
+            "Morning: publish 1 long video only. "
+            "Evening: publish 1 Short only (link to that morning’s long video)."
+            if part == "evening"
+            else "Morning: publish 1 long video only (no Short at this slot)."
         ),
         "thumbnail_notes": (
             f"Feature {deity} prominently; serene temple look: {visual}; "

@@ -316,10 +316,9 @@ def suggest_for_date(
         "visual_style": visual,
         "pantheon": sorted(HINDU_DEITIES.keys()),
         "shorts_plan": (
-            "Morning: publish 1 long video only. "
-            "Evening: publish 1 Short only (link to that morning’s long video)."
+            "Evening: 1 Short cut from that day’s morning long video (same A/V, no new song)."
             if part == "evening"
-            else "Morning: publish 1 long video only (no Short at this slot)."
+            else "Morning: publish 1 long video; cut 1 Short from it for evening."
         ),
         "thumbnail_notes": (
             f"Feature {deity} prominently; serene temple look: {visual}; "

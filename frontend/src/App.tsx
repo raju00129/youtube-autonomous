@@ -1593,7 +1593,7 @@ function WeekSchedule() {
     };
     setPlanNote(
       body.data.plan?.note ??
-        "Each day: morning = 1 long video only; evening = 1 Short only (links to morning’s full song when available).",
+        "Each day: morning = 1 long video; evening = 1 Short cut from that same morning video (no new song).",
     );
     if (body.data.days?.length) {
       setDays(body.data.days);
@@ -1685,7 +1685,7 @@ function WeekSchedule() {
     <main className="mx-auto flex max-w-5xl flex-col gap-8 px-6 py-12">
       <header className="space-y-2">
         <p className="text-sm uppercase tracking-[0.25em] text-temple/80">Weekly plan</p>
-        <h1 className="font-display text-4xl text-ink">1 long video + 1 Short / day</h1>
+        <h1 className="font-display text-4xl text-ink">1 long video + 1 Short from it / day</h1>
         <p className="max-w-2xl text-ink/70">{planNote}</p>
       </header>
 
@@ -1742,7 +1742,7 @@ function WeekSchedule() {
                 {weekday} · {day.date}
               </h2>
               <p className="mb-4 text-sm text-ink/55">
-                Mood: {day.slots[0]?.auto_mood ?? "—"} · Morning long video · Evening Short
+                Mood: {day.slots[0]?.auto_mood ?? "—"} · Morning long video · Evening Short from morning
               </p>
               <div className="grid gap-3 md:grid-cols-2">
                 {day.slots.map((slot) => (
@@ -1833,7 +1833,7 @@ function WeekSchedule() {
                         {busyIds[slot.id]
                           ? "Starting…"
                           : slot.publish_format === "short" || slot.daypart === "evening"
-                            ? "Create evening Short"
+                            ? "Link morning video"
                             : "Create morning video"}
                       </button>
                     )}

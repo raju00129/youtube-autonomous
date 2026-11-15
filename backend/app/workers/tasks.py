@@ -373,15 +373,87 @@ def cleanup_published_media() -> dict[str, Any]:
         db.close()
 
 
+@celery_app.task(
+    name="app.workers.tasks.song_auto_publish_evening_short",
+    bind=True,
+    soft_time_limit=1800,
+    time_limit=2100,
+)
+def song_auto_publish_evening_short(self, song_id: str) -> dict[str, Any]:
+    """Upload Short cut from morning long video at evening time."""
+    from app.db import SessionLocal
+    from app.models import SongProject
+    from app.services_publish import PublishError, publish_evening_short_from_morning
+
+    celery_progress(self, 1, "Evening Short queued…", song_id=song_id)
+    db = SessionLocal()
+    try:
+        song = db.scalar(
+            select(SongProject)
+            .where(SongProject.id == uuid.UUID(song_id))
+            .options(
+                selectinload(SongProject.shorts),
+                selectinload(SongProject.schedule_slots),
+            )
+            .with_for_update()
+        )
+        if song is None:
+            return {"song_id": song_id, "skipped": True, "reason": "missing"}
+        if song.stage in {"prep_running", "publish_running"}:
+            return {"song_id": song_id, "skipped": True, "reason": "busy"}
+        if any(getattr(s, "youtube_video_id", None) for s in (song.shorts or [])):
+            # If all active shorts uploaded, skip
+            from app.core.config import get_settings
+
+            n = max(1, min(2, int(getattr(get_settings(), "shorts_count", 1) or 1)))
+            active = [s for s in (song.shorts or []) if int(s.slot_index) <= n]
+            if active and all(s.youtube_video_id for s in active):
+                return {"song_id": song_id, "skipped": True, "reason": "short_already_live"}
+
+        def on_progress(percent: int, message: str) -> None:
+            celery_progress(self, percent, message, song_id=song_id)
+
+        try:
+            result = publish_evening_short_from_morning(
+                db, song, publish_now=True, on_progress=on_progress
+            )
+            # Mark linked evening schedule slot published
+            from app.models import ScheduleSlot
+
+            for slot in song.schedule_slots or []:
+                if (slot.daypart or "").lower() == "evening":
+                    slot.status = "published"
+            # Also mark evening slots that point at this morning song
+            evening_slots = db.scalars(
+                select(ScheduleSlot).where(ScheduleSlot.song_id == song.id)
+            ).all()
+            for slot in evening_slots:
+                if (slot.daypart or "").lower() == "evening":
+                    slot.status = "published"
+            db.commit()
+            celery_progress(self, 100, "Evening Short published", song_id=song_id)
+            return result
+        except PublishError as exc:
+            db.rollback()
+            return {"song_id": song_id, "error": str(exc)}
+    finally:
+        db.close()
+
+
 @celery_app.task(name="app.workers.tasks.pipeline_tick")
 def pipeline_tick() -> dict[str, Any]:
-    """Beat entry: enqueue due prep (−1h) and due auto-publish jobs."""
+    """Beat entry: enqueue due prep (−1h), morning publish, evening Short."""
     from app.db import SessionLocal
-    from app.services_pipeline import songs_due_for_prep, songs_due_for_publish
+    from app.services_pipeline import (
+        songs_due_for_evening_short,
+        songs_due_for_prep,
+        songs_due_for_publish,
+    )
 
     db = SessionLocal()
     enqueued_prep: list[str] = []
     enqueued_pub: list[str] = []
+    enqueued_short: list[str] = []
     try:
         for song in songs_due_for_prep(db):
             sid = str(song.id)
@@ -391,11 +463,17 @@ def pipeline_tick() -> dict[str, Any]:
             sid = str(song.id)
             song_auto_publish.delay(sid)
             enqueued_pub.append(sid)
+        for song in songs_due_for_evening_short(db):
+            sid = str(song.id)
+            song_auto_publish_evening_short.delay(sid)
+            enqueued_short.append(sid)
         return {
             "prep": enqueued_prep,
             "publish": enqueued_pub,
+            "evening_short": enqueued_short,
             "prep_count": len(enqueued_prep),
             "publish_count": len(enqueued_pub),
+            "evening_short_count": len(enqueued_short),
         }
     finally:
         db.close()

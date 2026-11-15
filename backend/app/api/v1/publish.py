@@ -49,8 +49,11 @@ def readiness(song: SongProject) -> dict:
         sum(1 for s in live_shorts if getattr(s, "final_clip_path", None)) >= n_shorts
     )
     reviewable = has_lyrics and has_music
-    deliverable_ok = (has_final if targets["longform"] else True) and (
-        shorts_final if targets["shorts"] else True
+    # Morning long needs final + Short cut (evening reuses same A/V)
+    need_long = bool(targets["longform"])
+    need_short_assets = need_long or bool(targets["shorts"])
+    deliverable_ok = (has_final if need_long else True) and (
+        shorts_final if need_short_assets else True
     )
     publishable = (
         reviewable
@@ -67,32 +70,32 @@ def readiness(song: SongProject) -> dict:
         {
             "key": "daypart",
             "label": (
-                "Morning slot → long video only"
+                "Morning → long video now; evening Short from this same video"
                 if targets["longform"]
-                else "Evening slot → Short only"
+                else "Evening → Short from morning video (no new A/V)"
             ),
             "ok": True,
         },
         {
             "key": "shorts_clips",
-            "label": f"{n_shorts} Short cut from main clip" if n_shorts == 1 else f"{n_shorts} Shorts cut from same clip",
-            "ok": shorts_cut if targets["shorts"] else True,
+            "label": "Short cut from morning clip (for evening)",
+            "ok": shorts_cut if need_short_assets else True,
         },
         {
             "key": "final_mix",
             "label": "Final A/V mix (audio+video preview)",
-            "ok": has_final if targets["longform"] else True,
+            "ok": has_final if need_long else True,
         },
         {
             "key": "shorts_final",
-            "label": f"{n_shorts} Short final mixed with audio" if n_shorts == 1 else f"{n_shorts} Short finals mixed with audio",
-            "ok": shorts_final if targets["shorts"] else True,
+            "label": "Short final mixed (evening upload)",
+            "ok": shorts_final if need_short_assets else True,
         },
         {"key": "thumbnail", "label": "Thumbnail (logo + deity + title)", "ok": has_thumbnail},
         {
             "key": "shorts",
-            "label": f"{n_shorts} Short planned" if n_shorts == 1 else f"{n_shorts} Shorts planned",
-            "ok": (len(live_shorts) >= n_shorts) if targets["shorts"] else True,
+            "label": "Short planned from this song",
+            "ok": (len(live_shorts) >= n_shorts) if need_short_assets else True,
         },
         {
             "key": "playlist",

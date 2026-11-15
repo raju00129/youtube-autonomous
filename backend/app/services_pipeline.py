@@ -118,13 +118,17 @@ def _shorts_final_ready(song: SongProject) -> bool:
 
 
 def _deliverable_ready(song: SongProject) -> bool:
-    """Morning needs long final; evening needs Short final."""
+    """Morning long video needs final mix (+ Short clip cut for evening reuse)."""
     from app.services_publish import daypart_for_song, publish_targets_for_daypart
 
     targets = publish_targets_for_daypart(daypart_for_song(song))
-    if targets["longform"] and not _has_final(song):
+    # Separate evening song rows are not prepped — Short comes from morning
+    if targets["shorts"] and not targets["longform"]:
         return False
-    if targets["shorts"] and not _shorts_final_ready(song):
+    if not _has_final(song):
+        return False
+    # Morning mix should also leave a Short ready for evening
+    if not _shorts_final_ready(song):
         return False
     return True
 
@@ -140,19 +144,29 @@ def pipeline_status(song: SongProject) -> dict:
     daypart = daypart_for_song(song)
     targets = publish_targets_for_daypart(daypart)
     has_final = _has_final(song)
-    published = song.stage == "published" or (
-        bool(song.youtube_video_id) if targets["longform"] else any(
-            getattr(s, "youtube_video_id", None) for s in (song.shorts or [])
-        )
+    short_uploaded = any(
+        getattr(s, "youtube_video_id", None) for s in (song.shorts or [])
     )
+    long_published = bool(song.youtube_video_id) or song.stage == "published"
 
     prep_at = publish_at - lead if publish_at else None
     next_step = "idle"
     detail = ""
-    slot_note = "morning long video" if targets["longform"] else "evening Short"
-    if published:
+    if targets["shorts"] and not targets["longform"]:
+        next_step = "use_morning"
+        detail = "Evening Short uses morning’s video — link morning song (no new A/V)"
+    elif long_published and short_uploaded:
         next_step = "done"
-        detail = f"Already published ({slot_note})"
+        detail = "Morning long video + evening Short published"
+    elif long_published and not short_uploaded:
+        from app.services_publish import evening_short_at
+
+        eve = evening_short_at(publish_at) if publish_at else None
+        next_step = "wait_evening_short"
+        if eve and now < eve:
+            detail = f"Long video live — evening Short from it at {eve.strftime('%H:%M IST')}"
+        else:
+            detail = "Long video live — evening Short from it is due"
     elif song.stage == "prep_running":
         next_step = "prep_running"
         detail = "Video + mix in progress…"
@@ -175,16 +189,16 @@ def pipeline_status(song: SongProject) -> dict:
     elif not _deliverable_ready(song):
         if prep_at and now < prep_at:
             next_step = "wait_prep"
-            detail = f"Auto prep for {slot_note} ~{prep_at.strftime('%d %b %H:%M IST')}"
+            detail = f"Auto prep morning video+Short cut ~{prep_at.strftime('%d %b %H:%M IST')}"
         else:
             next_step = "due_prep"
-            detail = f"Due for auto prep ({slot_note})"
+            detail = "Due for auto prep (morning long + Short cut for evening)"
     elif publish_at and now < publish_at:
         next_step = "wait_publish"
-        detail = f"Will auto-publish {slot_note} at {publish_at.strftime('%d %b %H:%M IST')}"
+        detail = f"Will auto-publish morning long video at {publish_at.strftime('%d %b %H:%M IST')}"
     else:
         next_step = "due_publish"
-        detail = f"Due for auto YouTube publish ({slot_note})"
+        detail = "Due for auto YouTube publish (morning long video)"
 
     return {
         "next_step": next_step,
@@ -198,7 +212,9 @@ def pipeline_status(song: SongProject) -> dict:
         "has_thumbnail": _has_thumbnail(song),
         "has_visual": _has_visual(song),
         "has_final": has_final,
-        "published": published,
+        "has_short_final": _shorts_final_ready(song),
+        "short_uploaded": short_uploaded,
+        "published": long_published and short_uploaded,
     }
 
 
@@ -213,7 +229,7 @@ def load_songs_for_pipeline(db: Session) -> list[SongProject]:
                 selectinload(SongProject.schedule_slots),
             )
             .where(SongProject.publish_at.is_not(None))
-            .where(SongProject.stage.notin_(["published"]))
+            .where(SongProject.stage.notin_(["published", "held"]))
             .order_by(SongProject.publish_at.asc())
         ).all()
     )
@@ -225,20 +241,14 @@ def songs_due_for_prep(db: Session) -> list[SongProject]:
     grace = timedelta(minutes=int(settings.prep_grace_minutes or 15))
     now = _now()
     due: list[SongProject] = []
-    for song in load_songs_for_pipeline(db):
-        from app.services_publish import daypart_for_song, publish_targets_for_daypart
+    from app.services_publish import daypart_for_song, publish_targets_for_daypart
 
+    for song in load_songs_for_pipeline(db):
         targets = publish_targets_for_daypart(daypart_for_song(song))
-        # Morning long already on YT → no prep; evening Short already uploaded → no prep
-        if targets["longform"] and song.youtube_video_id:
+        # Only morning songs are prepped; evening Short reuses morning A/V
+        if not targets["longform"]:
             continue
-        if targets["shorts"] and any(
-            getattr(s, "youtube_video_id", None)
-            for s in (song.shorts or [])
-            if int(s.slot_index) <= max(1, min(2, int(getattr(get_settings(), "shorts_count", 1) or 1)))
-        ):
-            continue
-        if song.stage == "held":
+        if song.youtube_video_id:
             continue
         if song.stage in LOCKED_STAGES and not lock_is_stale(song):
             continue
@@ -257,20 +267,18 @@ def songs_due_for_prep(db: Session) -> list[SongProject]:
 
 
 def songs_due_for_publish(db: Session) -> list[SongProject]:
+    """Morning long-form uploads only."""
     now = _now()
     due: list[SongProject] = []
-    from app.services_publish import (
-        daypart_for_song,
-        publish_targets_for_daypart,
-        same_day_morning_longform,
-    )
+    from app.services_publish import daypart_for_song, publish_targets_for_daypart
 
     for song in load_songs_for_pipeline(db):
-        # A song with a long-form id but not "published" had a partial upload;
-        # keep it due so the task reuses that video and finishes the Shorts.
-        if song.stage == "published" or song.stage == "held":
-            continue
         if song.stage in RUNNING_STAGES and not lock_is_stale(song):
+            continue
+        targets = publish_targets_for_daypart(daypart_for_song(song))
+        if not targets["longform"]:
+            continue
+        if song.youtube_video_id:
             continue
         publish_at = _aware(song.publish_at)
         if not publish_at or publish_at > now:
@@ -280,17 +288,54 @@ def songs_due_for_publish(db: Session) -> list[SongProject]:
         if not song.youtube_playlist_id:
             logger.info("skip auto-publish %s — no playlist", song.id)
             continue
-        # Evening Short waits until same-day morning long video is live
-        targets = publish_targets_for_daypart(daypart_for_song(song))
-        if targets["shorts"] and not targets["longform"]:
-            morning_id, _ = same_day_morning_longform(db, song)
-            if not morning_id:
-                logger.info(
-                    "skip auto-publish %s — evening Short waiting for morning long video",
-                    song.id,
-                )
-                continue
         due.append(song)
+    return due
+
+
+def songs_due_for_evening_short(db: Session) -> list[SongProject]:
+    """Morning songs whose Short (cut from same A/V) is due at evening."""
+    now = _now()
+    n_shorts = max(1, min(2, int(getattr(get_settings(), "shorts_count", 1) or 1)))
+    songs = db.scalars(
+        select(SongProject)
+        .options(
+            selectinload(SongProject.shorts),
+            selectinload(SongProject.schedule_slots),
+        )
+        .where(SongProject.youtube_video_id.is_not(None))
+        .where(SongProject.stage.notin_(["held", "publish_running", "prep_running"]))
+        .order_by(SongProject.publish_at.asc())
+    ).all()
+    due: list[SongProject] = []
+    from app.services_publish import daypart_for_song, evening_short_at
+
+    for song in songs:
+        if daypart_for_song(song) != "morning":
+            continue
+        if not song.youtube_playlist_id:
+            continue
+        active = [s for s in (song.shorts or []) if int(s.slot_index) <= n_shorts]
+        if not active:
+            continue
+        if all(getattr(s, "youtube_video_id", None) for s in active):
+            continue
+        if not all(
+            getattr(s, "final_clip_path", None) and Path(s.final_clip_path).exists()
+            for s in active
+        ):
+            continue
+        due_at = None
+        for s in active:
+            if s.youtube_video_id:
+                continue
+            pa = _aware(s.publish_at)
+            if pa is not None:
+                due_at = pa if due_at is None or pa < due_at else due_at
+        if due_at is None:
+            pub = _aware(song.publish_at) or now
+            due_at = evening_short_at(pub)
+        if due_at <= now:
+            due.append(song)
     return due
 
 

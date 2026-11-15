@@ -35,8 +35,11 @@ def readiness(song: SongProject) -> dict:
         "published",
     }
     has_final = bool(getattr(song, "final_video_path", None))
+    from app.services_publish import daypart_for_song, publish_targets_for_daypart
     from app.services_video import active_shorts, configured_shorts_count
 
+    daypart = daypart_for_song(song)
+    targets = publish_targets_for_daypart(daypart)
     n_shorts = configured_shorts_count()
     live_shorts = active_shorts(song)
     shorts_cut = (
@@ -46,7 +49,14 @@ def readiness(song: SongProject) -> dict:
         sum(1 for s in live_shorts if getattr(s, "final_clip_path", None)) >= n_shorts
     )
     reviewable = has_lyrics and has_music
-    publishable = reviewable and has_final and bool(getattr(song, "youtube_playlist_id", None))
+    deliverable_ok = (has_final if targets["longform"] else True) and (
+        shorts_final if targets["shorts"] else True
+    )
+    publishable = (
+        reviewable
+        and deliverable_ok
+        and bool(getattr(song, "youtube_playlist_id", None))
+    )
     can_set_time = reviewable
 
     checks = [
@@ -55,25 +65,34 @@ def readiness(song: SongProject) -> dict:
         {"key": "audio", "label": "Song audio uploaded", "ok": has_music},
         {"key": "video", "label": "Kling visual clip (720p 16:9)", "ok": has_video},
         {
+            "key": "daypart",
+            "label": (
+                "Morning slot → long video only"
+                if targets["longform"]
+                else "Evening slot → Short only"
+            ),
+            "ok": True,
+        },
+        {
             "key": "shorts_clips",
             "label": f"{n_shorts} Short cut from main clip" if n_shorts == 1 else f"{n_shorts} Shorts cut from same clip",
-            "ok": shorts_cut,
+            "ok": shorts_cut if targets["shorts"] else True,
         },
         {
             "key": "final_mix",
             "label": "Final A/V mix (audio+video preview)",
-            "ok": has_final,
+            "ok": has_final if targets["longform"] else True,
         },
         {
             "key": "shorts_final",
             "label": f"{n_shorts} Short final mixed with audio" if n_shorts == 1 else f"{n_shorts} Short finals mixed with audio",
-            "ok": shorts_final,
+            "ok": shorts_final if targets["shorts"] else True,
         },
         {"key": "thumbnail", "label": "Thumbnail (logo + deity + title)", "ok": has_thumbnail},
         {
             "key": "shorts",
             "label": f"{n_shorts} Short planned" if n_shorts == 1 else f"{n_shorts} Shorts planned",
-            "ok": len(live_shorts) >= n_shorts,
+            "ok": (len(live_shorts) >= n_shorts) if targets["shorts"] else True,
         },
         {
             "key": "playlist",

@@ -214,9 +214,8 @@ _EVENING_PREFIXES = [
 ]
 
 DAYPART_FLAVOR = {
-    # Channel data (Nov 2026): long-form avg views ~2× stronger at ~6 AM IST than ~7 PM;
-    # Shorts slightly stronger at ~7 PM. Keep both dayparts; morning favors long-form,
-    # evening favors Shorts. Publish at window start so indexing meets viewers.
+    # Channel strategy (Nov 2026): morning = 1 long video only; evening = 1 Short only.
+    # Long-form performs better ~6 AM; Shorts perform better ~7 PM.
     "morning": {
         "label": "Morning (మంగళారతి / early devotion)",
         "topic_prefix": _MORNING_PREFIXES[0],

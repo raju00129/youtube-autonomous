@@ -1591,7 +1591,7 @@ function WeekSchedule() {
     };
     setPlanNote(
       body.data.plan?.note ??
-        "Each day: morning song + evening song; each song → 2 Shorts from same audio/video (4 Shorts/day).",
+        "Each day: morning = 1 long video only; evening = 1 Short only (links to morning’s full song when available).",
     );
     if (body.data.days?.length) {
       setDays(body.data.days);

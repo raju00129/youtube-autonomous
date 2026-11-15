@@ -557,14 +557,7 @@ def short_related_description(
     main_url: str | None = None,
 ) -> str:
     """Put the long-form watch link at the top so Shorts point at the right full song."""
-    watch = (main_url or "").strip() or f"https://www.youtube.com/watch?v={main_video_id}"
-    short_link = f"https://youtu.be/{main_video_id}"
-    header = (
-        f"▶ Full song (related video): {watch}\n"
-        f"▶ {short_link}\n\n"
-    )
     body = (base_description or "").strip()
-    # Drop stale placeholders / duplicate full-song lines
     cleaned_lines: list[str] = []
     for line in body.splitlines():
         low = line.lower().strip()
@@ -576,4 +569,12 @@ def short_related_description(
             continue
         cleaned_lines.append(line)
     body = "\n".join(cleaned_lines).strip()
+    if not (main_video_id or "").strip():
+        return body[:4900]
+    watch = (main_url or "").strip() or f"https://www.youtube.com/watch?v={main_video_id}"
+    short_link = f"https://youtu.be/{main_video_id}"
+    header = (
+        f"▶ Full song (related video): {watch}\n"
+        f"▶ {short_link}\n\n"
+    )
     return f"{header}{body}"[:4900]

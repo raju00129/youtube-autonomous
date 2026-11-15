@@ -151,7 +151,7 @@ class ScheduleSlot(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
     week_start: Mapped[date] = mapped_column(Date, nullable=False)  # Monday of week
     slot_date: Mapped[date] = mapped_column(Date, nullable=False)
-    # morning | evening — two long-form songs per day
+    # morning | evening — morning long video; evening Short
     daypart: Mapped[str] = mapped_column(String(20), default="morning", nullable=False)
     publish_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     title_hint: Mapped[str | None] = mapped_column(String(200), nullable=True)

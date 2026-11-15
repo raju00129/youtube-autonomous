@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import get_settings
 from app.models import SongProject
@@ -29,6 +30,63 @@ class PublishError(RuntimeError):
 def _daypart_from_when(when: datetime) -> str:
     local = when.astimezone(IST) if when.tzinfo else when.replace(tzinfo=IST)
     return "morning" if local.hour < 12 else "evening"
+
+
+def daypart_for_song(song: SongProject) -> str:
+    """Morning = long video only; evening = Short only (channel strategy)."""
+    for slot in song.schedule_slots or []:
+        part = (getattr(slot, "daypart", None) or "").strip().lower()
+        if part in {"morning", "evening"}:
+            return part
+    if song.publish_at:
+        return _daypart_from_when(song.publish_at)
+    return "morning"
+
+
+def publish_targets_for_daypart(daypart: str) -> dict[str, bool]:
+    """What to upload for this daypart."""
+    part = (daypart or "morning").strip().lower()
+    if part == "evening":
+        return {"longform": False, "shorts": True}
+    return {"longform": True, "shorts": False}
+
+
+def same_day_morning_longform(
+    db: Session, song: SongProject
+) -> tuple[str | None, str | None]:
+    """Find today's morning long-form video so evening Shorts can link to it."""
+    when = song.publish_at
+    if when is None:
+        return None, None
+    local = when.astimezone(IST) if when.tzinfo else when.replace(tzinfo=IST)
+    day_start = local.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end = day_start + timedelta(days=1)
+
+    candidates = db.scalars(
+        select(SongProject)
+        .options(selectinload(SongProject.schedule_slots))
+        .where(SongProject.id != song.id)
+        .where(SongProject.youtube_video_id.is_not(None))
+        .where(SongProject.publish_at.is_not(None))
+        .where(SongProject.publish_at >= day_start)
+        .where(SongProject.publish_at < day_end)
+        .order_by(SongProject.publish_at.asc())
+    ).all()
+    for other in candidates:
+        if daypart_for_song(other) != "morning":
+            continue
+        vid = other.youtube_video_id
+        if vid:
+            return vid, other.youtube_url or f"https://www.youtube.com/watch?v={vid}"
+    for other in candidates:
+        pa = other.publish_at
+        if pa is None or not other.youtube_video_id:
+            continue
+        local_pa = pa.astimezone(IST) if pa.tzinfo else pa.replace(tzinfo=IST)
+        if local_pa.hour < 12:
+            vid = other.youtube_video_id
+            return vid, other.youtube_url or f"https://www.youtube.com/watch?v={vid}"
+    return None, None
 
 
 def short_stagger_hours_for(when: datetime) -> int:
@@ -86,11 +144,9 @@ def publish_song_to_youtube(
     publish_at: datetime | None = None,
     on_progress: ProgressCB = None,
 ) -> dict[str, Any]:
-    """Upload long-form + 2 Shorts, set thumbnail, add to playlists."""
+    """Upload by daypart: morning = long video only; evening = Short only."""
     if not yt.is_connected():
         raise PublishError("YouTube not connected — open /api/v1/youtube/auth first")
-
-    final = _require_file(song.final_video_path, "final mix")
     if not song.youtube_playlist_id:
         raise PublishError("Select a YouTube playlist before publishing")
 
@@ -106,191 +162,209 @@ def publish_song_to_youtube(
             raise PublishError("publish_at required when not publishing immediately")
         if when.tzinfo is None:
             when = when.replace(tzinfo=IST)
+    if song.publish_at is None:
+        song.publish_at = when
+
+    daypart = daypart_for_song(song)
+    targets = publish_targets_for_daypart(daypart)
     privacy, publish_at_iso = _youtube_schedule_fields(when)
     apply_short_publish_times(song, when)
     stagger_h = short_stagger_hours_for(when)
 
-    results: dict[str, Any] = {"longform": None, "shorts": [], "playlist": None}
+    results: dict[str, Any] = {
+        "longform": None,
+        "shorts": [],
+        "playlist": None,
+        "daypart": daypart,
+        "targets": targets,
+    }
+    video_id: str | None = song.youtube_video_id
+    url: str | None = song.youtube_url
 
-    # --- Long-form ---
-    if song.youtube_video_id:
-        report(on_progress, 15, "Long-form already on YouTube — reusing…")
-        video_id = song.youtube_video_id
-        url = song.youtube_url or f"https://www.youtube.com/watch?v={video_id}"
-        results["longform"] = {"video_id": video_id, "url": url, "reused": True}
+    # --- Long-form (morning only) ---
+    if targets["longform"]:
+        final = _require_file(song.final_video_path, "final mix")
+        if song.youtube_video_id:
+            report(on_progress, 15, "Long-form already on YouTube — reusing…")
+            video_id = song.youtube_video_id
+            url = song.youtube_url or f"https://www.youtube.com/watch?v={video_id}"
+            results["longform"] = {"video_id": video_id, "url": url, "reused": True}
+        else:
+            report(on_progress, 8, "Uploading long-form to YouTube…")
+            try:
+                uploaded = yt.upload_video(
+                    file_path=final,
+                    title=title,
+                    description=description,
+                    tags=tags,
+                    privacy_status=privacy,
+                    publish_at=publish_at_iso,
+                )
+            except YouTubeUploadError as exc:
+                raise PublishError(str(exc)) from exc
+            video_id = uploaded["video_id"]
+            url = uploaded["url"]
+            song.youtube_video_id = video_id
+            song.youtube_url = url
+            db.commit()
+            results["longform"] = {"video_id": video_id, "url": url, "reused": False}
+
+        if song.thumbnail_path and Path(song.thumbnail_path).exists() and video_id:
+            report(on_progress, 40, "Setting YouTube thumbnail…")
+            try:
+                yt.set_thumbnail(video_id=video_id, image_path=song.thumbnail_path)
+                results["thumbnail"] = "set"
+            except YouTubeUploadError as exc:
+                logger.warning("thumbnail set failed: %s", exc)
+                results["thumbnail"] = f"skipped: {exc}"
+
+        report(on_progress, 48, "Adding long-form to playlist…")
+        try:
+            yt.add_to_playlist(playlist_id=song.youtube_playlist_id, video_id=video_id)
+            results["playlist"] = song.youtube_playlist_id
+        except YouTubeUploadError as exc:
+            logger.warning("playlist add failed: %s", exc)
+            results["playlist_error"] = str(exc)
     else:
-        report(on_progress, 8, "Uploading long-form to YouTube…")
-        try:
-            uploaded = yt.upload_video(
-                file_path=final,
-                title=title,
-                description=description,
-                tags=tags,
-                privacy_status=privacy,
-                publish_at=publish_at_iso,
-            )
-        except YouTubeUploadError as exc:
-            raise PublishError(str(exc)) from exc
-        video_id = uploaded["video_id"]
-        url = uploaded["url"]
-        song.youtube_video_id = video_id
-        song.youtube_url = url
-        # Commit now: if a later step fails, a retry must reuse this upload.
-        db.commit()
-        results["longform"] = {"video_id": video_id, "url": url, "reused": False}
+        report(on_progress, 10, f"{daypart.title()}: skipping long-form (Short-only slot)…")
+        related_id, related_url = same_day_morning_longform(db, song)
+        if related_id:
+            video_id, url = related_id, related_url
+            results["related_morning"] = {"video_id": related_id, "url": related_url}
 
-    # Thumbnail (best-effort — channel may need verification for custom thumbs)
-    if song.thumbnail_path and Path(song.thumbnail_path).exists():
-        report(on_progress, 40, "Setting YouTube thumbnail…")
-        try:
-            yt.set_thumbnail(video_id=video_id, image_path=song.thumbnail_path)
-            results["thumbnail"] = "set"
-        except YouTubeUploadError as exc:
-            logger.warning("thumbnail set failed: %s", exc)
-            results["thumbnail"] = f"skipped: {exc}"
-
-    report(on_progress, 48, "Adding long-form to playlist…")
-    try:
-        yt.add_to_playlist(playlist_id=song.youtube_playlist_id, video_id=video_id)
-        results["playlist"] = song.youtube_playlist_id
-    except YouTubeUploadError as exc:
-        logger.warning("playlist add failed: %s", exc)
-        results["playlist_error"] = str(exc)
-
-    # --- Shorts (respect SHORTS_COUNT; Short 2 paused when count=1) ---
+    # --- Shorts (evening only) ---
     n_shorts = max(1, min(2, int(getattr(get_settings(), "shorts_count", 1) or 1)))
     shorts = [
         s
         for s in sorted(song.shorts or [], key=lambda s: s.slot_index)
         if int(s.slot_index) <= n_shorts
     ]
-    n = max(len(shorts), 1)
-    for i, short in enumerate(shorts):
-        pct = 55 + int(35 * (i / n))
-        if short.youtube_video_id:
-            report(on_progress, pct, f"Short {short.slot_index} already uploaded — reusing…")
+    if targets["shorts"]:
+        if not shorts:
+            raise PublishError("Evening Short slot has no Short clip — run Mix first")
+        n = max(len(shorts), 1)
+        for i, short in enumerate(shorts):
+            pct = 55 + int(35 * (i / n))
+            if short.youtube_video_id:
+                report(on_progress, pct, f"Short {short.slot_index} already uploaded — reusing…")
+                results["shorts"].append(
+                    {
+                        "slot_index": short.slot_index,
+                        "video_id": short.youtube_video_id,
+                        "url": short.youtube_url,
+                        "related_video_id": video_id,
+                        "related_video_url": url,
+                        "reused": True,
+                    }
+                )
+                continue
+            clip = short.final_clip_path or short.clip_path
+            if not clip or not Path(clip).exists():
+                results["shorts"].append(
+                    {"slot_index": short.slot_index, "error": "no final short clip"}
+                )
+                continue
+            report(on_progress, pct, f"Uploading Short {short.slot_index}…")
+            short_title = (short.title or f"{title} | Short {short.slot_index}")[:100]
+            if "#Shorts" not in short_title and "#shorts" not in short_title.lower():
+                suffix = " #Shorts"
+                short_title = (short_title[: 100 - len(suffix)] + suffix)[:100]
+            short_desc = yt.short_related_description(
+                base_description=(short.description or "").strip(),
+                main_video_id=video_id or "",
+                main_url=url,
+            )
+            short.description = short_desc
+            short_when = short_release_at(when, int(short.slot_index))
+            short.publish_at = short_when
+            short_privacy, short_publish_at_iso = _youtube_schedule_fields(short_when)
+            try:
+                up = yt.upload_video(
+                    file_path=clip,
+                    title=short_title,
+                    description=short_desc,
+                    tags=tags,
+                    privacy_status=short_privacy,
+                    publish_at=short_publish_at_iso,
+                )
+            except YouTubeUploadError as exc:
+                results["shorts"].append(
+                    {"slot_index": short.slot_index, "error": str(exc)}
+                )
+                continue
+            short.youtube_video_id = up["video_id"]
+            short.youtube_url = up["url"]
+            short.stage = "published" if short_privacy == "public" else "scheduled"
+            db.commit()
             results["shorts"].append(
                 {
                     "slot_index": short.slot_index,
-                    "video_id": short.youtube_video_id,
-                    "url": short.youtube_url,
+                    "video_id": up["video_id"],
+                    "url": up["url"],
                     "related_video_id": video_id,
                     "related_video_url": url,
-                    "reused": True,
+                    "publish_at": short_when.isoformat(),
+                    "privacy": short_privacy,
+                    "stagger_hours": 0 if int(short.slot_index) < 2 else stagger_h,
+                    "reused": False,
                 }
             )
-            continue
-        clip = short.final_clip_path or short.clip_path
-        if not clip or not Path(clip).exists():
-            results["shorts"].append(
-                {"slot_index": short.slot_index, "error": "no final short clip"}
-            )
-            continue
-        report(on_progress, pct, f"Uploading Short {short.slot_index}…")
-        short_title = (short.title or f"{title} | Short {short.slot_index}")[:100]
-        if "#Shorts" not in short_title and "#shorts" not in short_title.lower():
-            # Keep under 100 chars
-            suffix = " #Shorts"
-            short_title = (short_title[: 100 - len(suffix)] + suffix)[:100]
-        short_desc = yt.short_related_description(
-            base_description=(short.description or "").strip(),
-            main_video_id=video_id,
-            main_url=url,
-        )
-        short.description = short_desc
-        short_when = short_release_at(when, int(short.slot_index))
-        short.publish_at = short_when
-        short_privacy, short_publish_at_iso = _youtube_schedule_fields(short_when)
-        try:
-            up = yt.upload_video(
-                file_path=clip,
-                title=short_title,
-                description=short_desc,
-                tags=tags,
-                privacy_status=short_privacy,
-                publish_at=short_publish_at_iso,
-            )
-        except YouTubeUploadError as exc:
-            results["shorts"].append(
-                {"slot_index": short.slot_index, "error": str(exc)}
-            )
-            continue
-        short.youtube_video_id = up["video_id"]
-        short.youtube_url = up["url"]
-        short.stage = "published" if short_privacy == "public" else "scheduled"
-        db.commit()
-        results["shorts"].append(
-            {
-                "slot_index": short.slot_index,
-                "video_id": up["video_id"],
-                "url": up["url"],
-                "related_video_id": video_id,
-                "related_video_url": url,
-                "publish_at": short_when.isoformat(),
-                "privacy": short_privacy,
-                "stagger_hours": 0 if int(short.slot_index) < 2 else stagger_h,
-                "reused": False,
-            }
-        )
-        pl = song.shorts_playlist_id or song.youtube_playlist_id
-        if pl:
-            try:
-                yt.add_to_playlist(playlist_id=pl, video_id=up["video_id"])
-            except YouTubeUploadError as exc:
-                logger.warning("shorts playlist add failed: %s", exc)
+            pl = song.shorts_playlist_id or song.youtube_playlist_id
+            if pl:
+                try:
+                    yt.add_to_playlist(playlist_id=pl, video_id=up["video_id"])
+                except YouTubeUploadError as exc:
+                    logger.warning("shorts playlist add failed: %s", exc)
 
-    # Always re-pin Short descriptions to the long-form (covers reused Shorts too)
-    report(on_progress, 92, "Pinning Shorts → long-form related link…")
-    for short in shorts:
-        if not short.youtube_video_id:
-            continue
-        short_title = (short.title or f"{title} | Short {short.slot_index}")[:100]
-        if "#Shorts" not in short_title and "#shorts" not in short_title.lower():
-            suffix = " #Shorts"
-            short_title = (short_title[: 100 - len(suffix)] + suffix)[:100]
-        pinned = yt.short_related_description(
-            base_description=(short.description or "").strip(),
-            main_video_id=video_id,
-            main_url=url,
-        )
-        short.description = pinned
-        try:
-            yt.update_video_snippet(
-                video_id=short.youtube_video_id,
-                title=short_title,
-                description=pinned,
-                tags=tags,
-            )
-            for row in results["shorts"]:
-                if row.get("slot_index") == short.slot_index:
-                    row["related_video_id"] = video_id
-                    row["related_video_url"] = url
-                    row["description_pinned"] = True
-        except YouTubeUploadError as exc:
-            logger.warning("short related-link update failed: %s", exc)
+        if video_id:
+            report(on_progress, 92, "Pinning Shorts → morning long-form related link…")
+            for short in shorts:
+                if not short.youtube_video_id:
+                    continue
+                short_title = (short.title or f"{title} | Short {short.slot_index}")[:100]
+                if "#Shorts" not in short_title and "#shorts" not in short_title.lower():
+                    suffix = " #Shorts"
+                    short_title = (short_title[: 100 - len(suffix)] + suffix)[:100]
+                pinned = yt.short_related_description(
+                    base_description=(short.description or "").strip(),
+                    main_video_id=video_id,
+                    main_url=url,
+                )
+                short.description = pinned
+                try:
+                    yt.update_video_snippet(
+                        video_id=short.youtube_video_id,
+                        title=short_title,
+                        description=pinned,
+                        tags=tags,
+                    )
+                    for row in results["shorts"]:
+                        if row.get("slot_index") == short.slot_index:
+                            row["related_video_id"] = video_id
+                            row["related_video_url"] = url
+                            row["description_pinned"] = True
+                except YouTubeUploadError as exc:
+                    logger.warning("short related-link update failed: %s", exc)
+    else:
+        report(on_progress, 70, f"{daypart.title()}: skipping Shorts (long-form-only slot)…")
 
     song.publish_at = when
     song.stage = "published"
     db.flush()
     report(on_progress, 100, "Published to YouTube")
-    short_bits = []
-    for s in results["shorts"]:
-        if not s.get("url"):
-            continue
-        delay = s.get("stagger_hours") or 0
-        when_note = f" (+{delay}h)" if delay else " (with video)"
-        short_bits.append(
-            f"Short {s['slot_index']}{when_note}: {s['url']} → related {s.get('related_video_url') or url}"
-        )
-    note = f"Published long-form: {song.youtube_url}"
-    if short_bits:
-        note += " · " + " · ".join(short_bits)
+
+    if targets["longform"] and song.youtube_url:
+        note = f"Published morning long-form: {song.youtube_url}"
+    elif results["shorts"]:
+        short_bits = [
+            f"Short {s['slot_index']}: {s['url']}"
+            + (f" → related {s['related_video_url']}" if s.get("related_video_url") else "")
+            for s in results["shorts"]
+            if s.get("url")
+        ]
+        note = "Published evening Short · " + " · ".join(short_bits)
     else:
-        note += " · Shorts: none uploaded (check final Short clips)"
-    note += (
-        f" · Short 1 with main video; Short 2 scheduled +{stagger_h}h later. "
-        "Description link points to full song."
-    )
+        note = "Publish finished with nothing uploaded — check daypart targets / clips"
     return {
         "song_id": str(song.id),
         "stage": song.stage,

@@ -454,6 +454,24 @@ def publish_song_to_youtube(
     report(on_progress, 70, "Morning: long video only — Short waits for evening…")
     evening = evening_short_at(when)
     results["evening_short_at"] = evening.isoformat()
+    apply_short_publish_times(song, when)
+
+    # Keep schedule evening slot pointed at this morning song
+    try:
+        from app.models import ScheduleSlot
+
+        local = when.astimezone(IST) if when.tzinfo else when.replace(tzinfo=IST)
+        evening_slot = db.scalar(
+            select(ScheduleSlot)
+            .where(ScheduleSlot.slot_date == local.date())
+            .where(ScheduleSlot.daypart == "evening")
+        )
+        if evening_slot is not None and evening_slot.status != "skipped":
+            evening_slot.song_id = song.id
+            if evening_slot.status in {"planned", "song_created", "linked_morning"}:
+                evening_slot.status = "auto_from_morning"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("evening slot auto-link failed: %s", exc)
 
     song.publish_at = when
     song.stage = "published"
@@ -461,7 +479,7 @@ def publish_song_to_youtube(
     report(on_progress, 100, "Published morning long video")
     note = (
         f"Published morning long-form: {song.youtube_url}. "
-        f"Evening Short (from this video) scheduled ~{evening.strftime('%H:%M IST')}."
+        f"Evening Short (from this video) auto-publishes ~{evening.strftime('%H:%M IST')}."
     )
     return {
         "song_id": str(song.id),

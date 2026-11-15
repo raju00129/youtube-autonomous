@@ -25,8 +25,8 @@ IST = ZoneInfo("Asia/Kolkata")
 DAYPARTS = ("morning", "evening")
 
 PLAN_NOTE = (
-    "Each day: morning = 1 long video; evening = 1 Short cut from that same morning video "
-    "(no new evening song)."
+    "Each day: create morning video only — Short is cut with it and auto-publishes at evening. "
+    "No separate evening song or link step."
 )
 
 
@@ -48,31 +48,104 @@ def _format_for_daypart(daypart: str) -> str:
     return "longform" if targets["longform"] else "short"
 
 
-def _slot_payload(slot: ScheduleSlot) -> dict:
+def _morning_slot_for_day(db: Session, slot_date: date) -> ScheduleSlot | None:
+    return db.scalar(
+        select(ScheduleSlot)
+        .where(ScheduleSlot.slot_date == slot_date)
+        .where(ScheduleSlot.daypart == "morning")
+        .options(selectinload(ScheduleSlot.song).selectinload(SongProject.shorts))
+    )
+
+
+def link_evening_slot_to_morning(
+    db: Session, *, evening: ScheduleSlot, morning_song: SongProject
+) -> None:
+    """Point evening slot at morning song; Short publishes at evening time."""
+    from app.services_publish import apply_short_publish_times
+
+    when = evening.publish_at or morning_song.publish_at or _default_publish_at(
+        evening.slot_date, "evening"
+    )
+    apply_short_publish_times(morning_song, morning_song.publish_at or when)
+    evening.song_id = morning_song.id
+    if evening.status in {"planned", "song_created", "linked_morning"}:
+        evening.status = "auto_from_morning"
+    evening.auto_deity = morning_song.deity or evening.auto_deity
+    note = f"[evening Short auto from morning {morning_song.id}]"
+    notes = (evening.notes or "").strip()
+    if note not in notes:
+        evening.notes = f"{notes}\n{note}".strip() if notes else note
+
+
+def auto_link_evening_slots_for_week(db: Session, monday: date) -> int:
+    """Attach evening slots to that day's morning song (no manual click)."""
+    slots = db.scalars(
+        select(ScheduleSlot)
+        .where(ScheduleSlot.week_start == monday)
+        .options(selectinload(ScheduleSlot.song).selectinload(SongProject.shorts))
+    ).all()
+    by_day: dict[date, dict[str, ScheduleSlot]] = {}
+    for s in slots:
+        by_day.setdefault(s.slot_date, {})[(s.daypart or "morning")] = s
+    linked = 0
+    for day_slots in by_day.values():
+        morning = day_slots.get("morning")
+        evening = day_slots.get("evening")
+        if not morning or not evening or not morning.song_id:
+            continue
+        if evening.status == "skipped":
+            continue
+        morning_song = morning.song
+        if morning_song is None:
+            continue
+        if evening.song_id != morning.song_id or evening.status == "planned":
+            link_evening_slot_to_morning(db, evening=evening, morning_song=morning_song)
+            linked += 1
+    if linked:
+        db.commit()
+    return linked
+
+
+def _slot_payload(slot: ScheduleSlot, *, morning_song: SongProject | None = None) -> dict:
     daypart = slot.daypart or "morning"
     fmt = _format_for_daypart(daypart)
     song = getattr(slot, "song", None)
+    # Evening always displays/tracks the morning song's Short
+    if fmt == "short" and song is None and morning_song is not None:
+        song = morning_song
     short_url = None
     short_id = None
+    short_ready = False
     if song and fmt == "short":
         for sh in sorted(song.shorts or [], key=lambda s: s.slot_index):
+            if getattr(sh, "final_clip_path", None) or getattr(sh, "clip_path", None):
+                short_ready = True
             if sh.youtube_video_id:
                 short_id = sh.youtube_video_id
                 short_url = sh.youtube_url or f"https://www.youtube.com/shorts/{short_id}"
                 break
-    # Evening is published only once the Short from morning is live
     if slot.status == "skipped":
         published = False
+        status = "skipped"
     elif fmt == "short":
         published = bool(slot.status == "published" or short_id)
+        if published:
+            status = "published"
+        elif song and song.youtube_video_id and short_ready:
+            status = "queued_evening"
+        elif song:
+            status = "waiting_morning"
+        else:
+            status = "waits_for_morning"
     else:
         published = bool(
             slot.status == "published"
             or (song and (song.youtube_video_id or song.stage == "published"))
         )
+        status = "published" if published else slot.status
     youtube_url = short_url if fmt == "short" else (song.youtube_url if song else None)
     youtube_video_id = short_id if fmt == "short" else (song.youtube_video_id if song else None)
-    format_label = "long video" if fmt == "longform" else "Short (from morning)"
+    format_label = "long video" if fmt == "longform" else "Short (auto from morning)"
     return {
         "id": str(slot.id),
         "week_start": slot.week_start.isoformat(),
@@ -86,19 +159,20 @@ def _slot_payload(slot: ScheduleSlot) -> dict:
         "title_hint": slot.title_hint,
         "topic_override": slot.topic_override,
         "deity_override": slot.deity_override,
-        "status": "published" if published else slot.status,
+        "status": status,
         "published": published,
-        "song_id": str(slot.song_id) if slot.song_id else None,
+        "song_id": str(song.id) if song else (str(slot.song_id) if slot.song_id else None),
         "song_title": (song.title if song else None),
         "song_stage": (song.stage if song else None),
         "youtube_url": youtube_url,
         "youtube_video_id": youtube_video_id,
-        "auto_deity": slot.auto_deity,
+        "auto_deity": slot.auto_deity or (song.deity if song else None),
         "auto_topic": slot.auto_topic,
         "auto_mood": slot.auto_mood,
         "notes": slot.notes,
         "uploads": 1,
         "shorts_per_song": 1 if fmt == "short" else 0,
+        "needs_create": fmt == "longform" and not slot.song_id and not published,
         "suggestion": suggest_for_date(slot.slot_date, daypart=daypart),
     }
 
@@ -132,6 +206,7 @@ def calendar_suggest(on: date | None = None, daypart: str = "morning") -> dict:
 @router.get("/weeks/{week_start}")
 def get_week(week_start: date, db: Session = Depends(get_db)) -> dict:
     monday = _monday_of(week_start)
+    auto_link_evening_slots_for_week(db, monday)
     slots = db.scalars(
         select(ScheduleSlot)
         .where(ScheduleSlot.week_start == monday)
@@ -146,10 +221,18 @@ def get_week(week_start: date, db: Session = Depends(get_db)) -> dict:
         slots,
         key=lambda s: (s.slot_date, 0 if (s.daypart or "morning") == "morning" else 1),
     )
+    morning_by_day: dict[date, SongProject | None] = {}
+    for s in slots_sorted:
+        if (s.daypart or "morning") == "morning" and s.song is not None:
+            morning_by_day[s.slot_date] = s.song
+    payloads = []
     by_day: dict[str, list] = {}
     for s in slots_sorted:
+        morning_song = morning_by_day.get(s.slot_date)
+        payload = _slot_payload(s, morning_song=morning_song)
+        payloads.append(payload)
         key = s.slot_date.isoformat()
-        by_day.setdefault(key, []).append(_slot_payload(s))
+        by_day.setdefault(key, []).append(payload)
     return {
         "data": {
             "week_start": monday.isoformat(),
@@ -157,11 +240,11 @@ def get_week(week_start: date, db: Session = Depends(get_db)) -> dict:
                 "uploads_per_day": 2,
                 "longform_per_day": 1,
                 "shorts_per_day": 1,
-                "songs_per_day": 2,
+                "songs_per_day": 1,
                 "note": PLAN_NOTE,
             },
             "suggestions": week_suggestions(monday),
-            "slots": [_slot_payload(s) for s in slots_sorted],
+            "slots": payloads,
             "days": [{"date": d, "slots": items} for d, items in by_day.items()],
         }
     }
@@ -217,10 +300,12 @@ def ensure_week(body: WeekEnsureRequest, db: Session = Depends(get_db)) -> dict:
             )
             created += 1
     db.commit()
+    linked = auto_link_evening_slots_for_week(db, monday)
     payload = get_week(monday, db)
     payload["meta"] = {
         "created_slots": created,
         "refreshed_slots": refreshed,
+        "auto_linked_evening": linked,
         "uploads_per_day": 2,
         "longform_per_day": 1,
         "shorts_per_day": 1,
@@ -279,7 +364,7 @@ def materialize_slot(
     body: MaterializeRequest,
     db: Session = Depends(get_db),
 ) -> dict:
-    """Morning: create song. Evening: link morning song (Short from same A/V)."""
+    """Create morning song only. Evening Short is cut with Mix and auto-publishes later."""
     slot = db.get(ScheduleSlot, slot_id)
     if not slot:
         raise HTTPException(status_code=404, detail="Slot not found")
@@ -288,63 +373,14 @@ def materialize_slot(
 
     daypart = slot.daypart or "morning"
     fmt = _format_for_daypart(daypart)
-
-    # Evening Short = cut from morning video — never a new song
     if fmt == "short":
-        from app.services_publish import apply_short_publish_times, same_day_morning_song
-
-        when = slot.publish_at or _default_publish_at(slot.slot_date, "evening")
-        morning_slot = db.scalar(
-            select(ScheduleSlot)
-            .where(ScheduleSlot.slot_date == slot.slot_date)
-            .where(ScheduleSlot.daypart == "morning")
-            .options(
-                selectinload(ScheduleSlot.song).selectinload(SongProject.shorts),
-            )
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Evening Short is automatic — create the morning video only. "
+                "The Short is cut with that video and publishes at evening."
+            ),
         )
-        morning = morning_slot.song if morning_slot and morning_slot.song_id else None
-        if morning is None:
-            morning = same_day_morning_song(db, on_day=when, require_youtube=False)
-        if morning is None:
-            raise HTTPException(
-                status_code=409,
-                detail="Create the morning long video for this day first — evening Short uses that same video",
-            )
-        apply_short_publish_times(morning, morning.publish_at or when)
-        slot.song_id = morning.id
-        slot.status = "linked_morning"
-        slot.auto_deity = morning.deity or slot.auto_deity
-        slot.notes = (slot.notes or "").strip()
-        link_note = f"[evening Short from morning song {morning.id}]"
-        if link_note not in (slot.notes or ""):
-            slot.notes = f"{slot.notes}\n{link_note}".strip() if slot.notes else link_note
-        db.commit()
-        slot = db.scalar(
-            select(ScheduleSlot)
-            .where(ScheduleSlot.id == slot_id)
-            .options(selectinload(ScheduleSlot.song).selectinload(SongProject.shorts))
-        )
-        assert slot is not None
-        return {
-            "data": {
-                "slot": _slot_payload(slot),
-                "song_id": str(morning.id),
-                "title": morning.title,
-                "daypart": daypart,
-                "publish_format": "short",
-                "stage": morning.stage,
-                "lyrics_pending": False,
-                "note": (
-                    "Evening Short linked to morning video — same song A/V, "
-                    "Short uploads at evening time (no new lyrics/audio)."
-                ),
-                "next": [
-                    "Finish morning long video (lyrics → audio → visual → mix → publish)",
-                    "Short is cut from that morning video during Mix",
-                    "At evening, Short auto-publishes with link to the morning video",
-                ],
-            }
-        }
 
     suggestion = suggest_for_date(slot.slot_date, daypart=daypart)
     deity = slot.deity_override or slot.auto_deity or suggestion["deity"]
@@ -452,6 +488,15 @@ def materialize_slot(
     slot.auto_deity = deity
     slot.auto_topic = topic
     slot.auto_mood = mood
+
+    # Evening Short rides this same song — cut at Mix, publish at evening
+    evening = db.scalar(
+        select(ScheduleSlot)
+        .where(ScheduleSlot.slot_date == slot.slot_date)
+        .where(ScheduleSlot.daypart == "evening")
+    )
+    if evening is not None and evening.status != "skipped":
+        link_evening_slot_to_morning(db, evening=evening, morning_song=song)
     db.commit()
 
     if body.generate_lyrics:
@@ -506,29 +551,19 @@ def materialize_slot(
                 for s in song.shorts
             ],
             "publish_format": fmt,
-            "next": (
-                [
-                    "Lyrics generate in the background — open the song when ready",
-                    "Approve lyrics → Suno → upload MP3",
-                    "Generate 16:9 visual + final mix",
-                    "Publish morning long video only (no Short)",
-                ]
-                if fmt == "longform"
-                else [
-                    "Lyrics generate in the background — open the song when ready",
-                    "Approve lyrics → Suno → upload MP3",
-                    "Generate visual + cut 1 Short (9:16)",
-                    "Publish evening Short only (links to that morning’s long video)",
-                ]
-            ),
+            "next": [
+                "Lyrics generate in the background — open the song when ready",
+                "Approve lyrics → Suno → upload MP3",
+                "Generate visual + Mix (cuts evening Short from same A/V)",
+                "Publish morning long video; Short auto-publishes at evening",
+            ],
             "note": (
-                (
-                    "Morning long-video song created. Lyrics generating in background."
-                    if fmt == "longform"
-                    else "Evening Short song created. Lyrics generating in background."
+                "Morning video created — Short will be cut with Mix and auto-publish at evening."
+                + (
+                    " Lyrics generating in background."
+                    if lyrics_job_id
+                    else ""
                 )
-                if lyrics_job_id
-                else "Song created without lyrics."
             ),
         }
     }

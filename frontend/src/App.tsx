@@ -1541,6 +1541,7 @@ type ScheduleSlot = {
   title_hint?: string | null;
   status: string;
   published?: boolean;
+  needs_create?: boolean;
   song_id?: string | null;
   song_title?: string | null;
   song_stage?: string | null;
@@ -1593,7 +1594,7 @@ function WeekSchedule() {
     };
     setPlanNote(
       body.data.plan?.note ??
-        "Each day: morning = 1 long video; evening = 1 Short cut from that same morning video (no new song).",
+        "Create morning video only — Short is cut with it and auto-publishes at evening.",
     );
     if (body.data.days?.length) {
       setDays(body.data.days);
@@ -1685,7 +1686,7 @@ function WeekSchedule() {
     <main className="mx-auto flex max-w-5xl flex-col gap-8 px-6 py-12">
       <header className="space-y-2">
         <p className="text-sm uppercase tracking-[0.25em] text-temple/80">Weekly plan</p>
-        <h1 className="font-display text-4xl text-ink">1 long video + 1 Short from it / day</h1>
+        <h1 className="font-display text-4xl text-ink">Morning video · evening Short auto</h1>
         <p className="max-w-2xl text-ink/70">{planNote}</p>
       </header>
 
@@ -1742,7 +1743,7 @@ function WeekSchedule() {
                 {weekday} · {day.date}
               </h2>
               <p className="mb-4 text-sm text-ink/55">
-                Mood: {day.slots[0]?.auto_mood ?? "—"} · Morning long video · Evening Short from morning
+                Mood: {day.slots[0]?.auto_mood ?? "—"} · Create morning only · Short auto at evening
               </p>
               <div className="grid gap-3 md:grid-cols-2">
                 {day.slots.map((slot) => (
@@ -1777,21 +1778,29 @@ function WeekSchedule() {
                     {slot.song_title && (
                       <p className="text-sm text-ink/70 line-clamp-2">{slot.song_title}</p>
                     )}
-                    <input
-                      className="w-full border border-ink/15 bg-white px-3 py-2 text-sm"
-                      defaultValue={slot.title_hint ?? ""}
-                      placeholder={`${slot.daypart ?? "slot"} title hint`}
-                      onBlur={(e) => void saveHint(slot.id, e.target.value)}
-                      disabled={!!slot.published}
-                    />
+                    {(slot.publish_format !== "short" && slot.daypart !== "evening") && (
+                      <input
+                        className="w-full border border-ink/15 bg-white px-3 py-2 text-sm"
+                        defaultValue={slot.title_hint ?? ""}
+                        placeholder={`${slot.daypart ?? "slot"} title hint`}
+                        onBlur={(e) => void saveHint(slot.id, e.target.value)}
+                        disabled={!!slot.published}
+                      />
+                    )}
                     <label className="grid gap-1 text-xs text-ink/60">
-                      Publish time (anytime) — saves when you pick
+                      {slot.publish_format === "short" || slot.daypart === "evening"
+                        ? "Evening Short time (auto from morning video)"
+                        : "Publish time — saves when you pick"}
                       <input
                         key={`${slot.id}-${slot.publish_at ?? "empty"}`}
                         type="datetime-local"
                         className="border border-ink/15 bg-white px-2 py-1.5 text-sm"
                         defaultValue={toLocalInputValue(slot.publish_at)}
-                        disabled={!!slot.published}
+                        disabled={
+                          !!slot.published ||
+                          slot.publish_format === "short" ||
+                          slot.daypart === "evening"
+                        }
                         onChange={(e) => {
                           if (!e.target.value) return;
                           void savePublishAt(slot.id, e.target.value);
@@ -1799,7 +1808,17 @@ function WeekSchedule() {
                       />
                     </label>
                     <p className="text-xs text-ink/50">
-                      {slot.published ? "published" : slot.status}
+                      {slot.published
+                        ? "published"
+                        : slot.status === "waits_for_morning"
+                          ? "waiting — create morning video"
+                          : slot.status === "waiting_morning"
+                            ? "waiting — finish morning Mix/publish"
+                            : slot.status === "queued_evening"
+                              ? "queued — Short auto-publishes at evening"
+                              : slot.status === "auto_from_morning"
+                                ? "auto from morning video"
+                                : slot.status}
                       {slot.song_stage ? ` · song: ${slot.song_stage}` : ""}
                     </p>
                     {slot.published && slot.youtube_url ? (
@@ -1813,6 +1832,19 @@ function WeekSchedule() {
                           ? "Watch Short"
                           : "Watch long video"}
                       </a>
+                    ) : slot.publish_format === "short" || slot.daypart === "evening" ? (
+                      slot.song_id ? (
+                        <Link
+                          to={`/songs/${slot.song_id}`}
+                          className="border border-ink/20 bg-white px-3 py-2 text-center text-sm text-ink"
+                        >
+                          Open morning song
+                        </Link>
+                      ) : (
+                        <p className="border border-ink/10 bg-ink/5 px-3 py-2 text-center text-sm text-ink/60">
+                          Auto — create morning video; Short publishes here at evening
+                        </p>
+                      )
                     ) : slot.song_id ? (
                       <Link
                         to={`/songs/${slot.song_id}`}
@@ -1830,11 +1862,7 @@ function WeekSchedule() {
                         onClick={() => void materialize(slot.id)}
                         className="bg-ink px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
                       >
-                        {busyIds[slot.id]
-                          ? "Starting…"
-                          : slot.publish_format === "short" || slot.daypart === "evening"
-                            ? "Link morning video"
-                            : "Create morning video"}
+                        {busyIds[slot.id] ? "Starting…" : "Create morning video"}
                       </button>
                     )}
                   </div>

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from fastapi import Header, HTTPException
+from fastapi import Header, HTTPException, Query
 
 from app.core.config import get_settings
 
@@ -125,5 +125,10 @@ def list_channels() -> list[dict]:
 
 def channel_key_dependency(
     x_channel_key: str | None = Header(default=None, alias="X-Channel-Key"),
+    channel_key: str | None = Query(
+        default=None,
+        description="Fallback for media tags (img/audio/video) that cannot send headers",
+    ),
 ) -> ChannelKey:
-    return normalize_channel_key(x_channel_key)
+    # Header wins; query supports <img>/<video> URLs via withPortalKey.
+    return normalize_channel_key(x_channel_key or channel_key)

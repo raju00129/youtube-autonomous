@@ -38,17 +38,21 @@ export function clearPortalUnlock(): void {
   sessionStorage.removeItem(KEY_STORAGE);
 }
 
-/** Append portal_key for media tags (img/audio/video) that cannot send headers. */
+/** Append portal_key + channel_key for media tags (img/audio/video) that cannot send headers. */
 export function withPortalKey(url: string): string {
   const key = getPortalKey();
-  if (!key) return url;
+  const channel = getChannelKey();
   try {
     const u = new URL(url, typeof window !== "undefined" ? window.location.origin : API_BASE);
-    u.searchParams.set("portal_key", key);
+    if (key) u.searchParams.set("portal_key", key);
+    u.searchParams.set("channel_key", channel);
     return u.toString();
   } catch {
+    const parts: string[] = [];
+    if (key) parts.push(`portal_key=${encodeURIComponent(key)}`);
+    parts.push(`channel_key=${encodeURIComponent(channel)}`);
     const sep = url.includes("?") ? "&" : "?";
-    return `${url}${sep}portal_key=${encodeURIComponent(key)}`;
+    return `${url}${sep}${parts.join("&")}`;
   }
 }
 

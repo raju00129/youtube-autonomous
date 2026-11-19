@@ -28,8 +28,8 @@ class Settings(BaseSettings):
     openai_image_enabled: bool = False
 
     gemini_api_key: str = ""
-    # Prefer free-tier Flash-Lite for lyrics (avoid paid 3.8 Flash rates)
-    gemini_llm_model: str = "gemini-2.5-flash-lite"
+    # Free-tier Flash-Lite alias (2.5-flash-lite is retired for new/free projects)
+    gemini_llm_model: str = "gemini-flash-lite-latest"
     # Cheapest Gemini image model (image gen has no free tier — keep Lite)
     gemini_image_model: str = "gemini-3.1-flash-lite-image"
     gemini_image_timeout_sec: int = 180

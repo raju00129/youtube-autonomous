@@ -95,13 +95,14 @@ def generate_lyrics(
         avoid_echo=avoid_echo,
     )
 
-    primary = (settings.gemini_llm_model or "gemini-2.5-flash-lite").strip()
-    # Stay on free/lite models only — paid Flash hits prepaid billing (HTTP 402).
+    primary = (settings.gemini_llm_model or "gemini-flash-lite-latest").strip()
+    # Free-tier aliases first — 2.5-flash-lite is 404 for new/free users.
     model_fallbacks = [
         primary,
-        "gemini-2.5-flash-lite",
-        "gemini-2.0-flash-lite",
         "gemini-flash-lite-latest",
+        "gemini-3.1-flash-lite",
+        "gemini-3.5-flash-lite",
+        "gemini-flash-latest",
         "gemini-2.0-flash",
     ]
     models = [m for i, m in enumerate(model_fallbacks) if m and m not in model_fallbacks[:i]]

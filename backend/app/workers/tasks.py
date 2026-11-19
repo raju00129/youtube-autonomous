@@ -275,7 +275,15 @@ def song_fill_lyrics(
         if song.lyrics_versions:
             return {"song_id": song_id, "skipped": True, "reason": "already_has_lyrics"}
 
-        song_lang = (song.language or "te").strip() or "te"
+        # Prefer channel_key so Hindi schedule songs never generate Telugu
+        ck = (getattr(song, "channel_key", None) or "te").strip().lower()
+        song_lang = (song.language or "").strip()
+        if ck == "hi" and not song_lang.lower().startswith("hi"):
+            song_lang = "hi"
+            song.language = "hi"
+        elif not song_lang:
+            song_lang = "hi" if ck == "hi" else "te"
+            song.language = song_lang
         lang_label = "Hindi" if song_lang.startswith("hi") else "Telugu"
         celery_progress(
             self, 8, f"Writing {lang_label} lyrics with Gemini…", song_id=song_id

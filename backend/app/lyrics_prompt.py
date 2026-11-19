@@ -93,6 +93,91 @@ UNIQUENESS (critical — channel must not sound like the same song every day)
 """.strip()
 
 
+HINDI_UNIQUENESS_BLOCK = """
+UNIQUENESS (critical — channel must not sound like the same song every day)
+- Invent a FRESH angle for THIS draft. Do not default to a generic “morning wake-up / pratah stuti” template.
+- Pick ONE distinct poetic focus and stay with it (examples — choose something NEW):
+  leela scene, specific nama/guna, karuna plea, temple mood, Ganga/Yamuna abode,
+  diya-aarti detail, cool moonlight, sharanagati, protective ugra-karuna, etc.
+- Title MUST feel new — prefer vivid Hindi Devanagari titles (not Telugu script).
+- Pallavi must NOT recycle stock openings like “प्रात:काल…”, “जय जय…” every time, or the same
+  “ॐ नमः शिवाय + रक्षा करो” combo every Shiva song.
+- FORBIDDEN cookie-cutter: same 3–4 nama lines reshuffled; Charanams that only say “protect us / we surrender”.
+- Even if topic mentions “morning” or “aarti”, find a NEW metaphor — not the same pratah framing again.
+- Self-check: if this song could be mistaken for yesterday’s after changing 3 words, REWRITE.
+- CRITICAL: output sung lines in Hindi Devanagari ONLY — never Telugu script (తెలుగు).
+""".strip()
+
+
+HINDI_SONG_FORM_BLOCK = """
+MANDATORY SONG FORM (premium bhajan / kirtan arc — follow this shape exactly)
+Use ONLY English bracket tags like [Pallavi], [Anupallavi], [Charanam 1].
+FORBIDDEN in the lyrics body (Suno will sing them — never output these):
+- Hindi/Devanagari section headers with dandas: ॥ पल्लवी ॥, ॥ अनुपल्लवी ॥, etc.
+- Any non-English section title lines. Tags must be English [Name] only.
+
+[Opening Hook]
+… 3–5 short nama-rich lines. Immediate {vocal_label} solo, a cappella feel —
+NO orchestra yet. Pure voice calling the deity (e.g. रामा! रघुरामा! style for that deity).
+Urgent, sacred, congregation-ready. Different from the Pallavi (shorter nama cascade).
+
+[Orchestra Enter]
+… Write ONLY this single cue line (no sung lyrics here):
+Full Classical Ensemble Enters
+
+[Pallavi]
+… 3–4 short melodic lines. Sacred HOOK / repeating chorus. Nama-rich, deep Hindi,
+singable; rhyme or assonance OK. This is the main refrain of the song.
+
+[Anupallavi]
+… 3–4 lines that lift from the Pallavi — guna / leela / karuna in elevated register.
+
+[Pallavi]
+… REPEAT the SAME Pallavi text again (do not rewrite).
+
+[Slokam]
+… 1 short ORIGINAL Sanskrit sloka (2–4 lines / one couplet)
+praising THIS deity. Soft chant break. Not copied from famous stotras.
+
+[Sanskrit Chant Cue]
+… Write ONLY this single cue line (no new sung lyrics here):
+Deep Sanskrit Chant – Traditional {vocal_label} Voice
+
+[Pallavi]
+… REPEAT the SAME Pallavi text again.
+
+[Charanam 1]
+… 6–8 deep poetic lines (guna, leela, karuna, sharanu). Traditional bhakti Hindi —
+never prosaic speech. May use short stanza groups (4+4).
+
+[Pallavi]
+… REPEAT the SAME Pallavi text again.
+
+[Charanam 2]
+… 6–8 new deep poetic lines; return naturally toward Pallavi mood.
+
+[Pallavi]
+… REPEAT the SAME Pallavi text again (closing / समापन chorus — same words).
+
+[Grand Chorus]
+… 3–5 short nama sankirtana lines — grand congregational close
+(e.g. जय जय …! style for THIS deity). Climactic, joyful, temple-hall energy.
+Not a copy of the Pallavi; a final nama burst that seals the song.
+
+HARD RULES
+1. Pallavi text must appear at least 4 times with the EXACT SAME words every time.
+2. Opening Hook is NOT the Pallavi — it is a shorter a-cappella nama cascade before orchestra.
+3. Grand Chorus is NOT a fifth Pallavi — it is a closing jaya/nama burst.
+4. Include [Orchestra Enter] and [Sanskrit Chant Cue] exactly as cue lines (English OK there).
+5. Sung lyric lines MUST be Hindi Devanagari script (Slokam may be Sanskrit). Section tags and cue lines are English only.
+6. NEVER write ॥ … ॥ Devanagari headers — Suno sings them as lyrics. Use [Pallavi] etc. only.
+7. Charanams = traditional bhakti poetry. Ban modern slang and colloquial Hindi.
+8. Original only — no copyrighted film lyrics; no verbatim famous bhajans.
+9. Keep lines short–medium for singing; keep WORD CHOICE deep and traditional.
+10. Self-check: if any line is Telugu script or everyday talk, rewrite in classical Hindi Devanagari.
+""".strip()
+
+
 def build_lyrics_prompt(
     *,
     title: str | None,
@@ -132,18 +217,12 @@ AVOID ECHOING THESE RECENT CHANNEL SONGS (do not reuse titles, Pallavi lines, or
 {avoid_echo.strip()[:2200]}
 """
 
-    form = SONG_FORM_BLOCK.format(vocal_label=vocal_label)
-    if hindi:
-        # Soften Telugu-only lines in the shared form for Hindi channel
-        form = (
-            form.replace("deep Telugu", "deep Hindi")
-            .replace("traditional bhakti Telugu", "traditional bhakti Hindi")
-            .replace("Sung lyric lines MUST be Telugu script", "Sung lyric lines MUST be Hindi Devanagari script")
-            .replace("Ban modern slang and colloquial Telugu.", "Ban modern slang and colloquial Hindi.")
-            .replace("ముగింపు chorus", "समापन chorus")
-            .replace("రామా! రఘురామా!", "रामा! रघुरामा!")
-            .replace("జయ జయ", "जय जय")
-        )
+    form = (
+        HINDI_SONG_FORM_BLOCK.format(vocal_label=vocal_label)
+        if hindi
+        else SONG_FORM_BLOCK.format(vocal_label=vocal_label)
+    )
+    uniqueness = HINDI_UNIQUENESS_BLOCK if hindi else UNIQUENESS_BLOCK
 
     if hindi:
         return f"""You are a senior Hindi bhajan / kirtan lyricist for YouTube channel "Devotional Songs Hindi".
@@ -154,7 +233,7 @@ LANGUAGE REGISTER (critical — failure if violated)
 - Sung lines MUST be Hindi Devanagari (हिन्दी). Never transliteration-only; never Telugu script for sung lines.
 - Write in CLASSICAL / literary BHAKTI Hindi — the sacred poetic tongue of traditional bhajans and kirtans.
 - Prefer elevated bhakti diction: नाम, गुण, लीला, करुणा, शरणागति, ज्योति, अमृत, चरण, हृदय, आनंद, दिव्य, पुण्य, etc. where natural.
-- FORBIDDEN: modern chat Hindi; film-song slang; English mix-ins in sung lines; flat kids-bhajan wording.
+- FORBIDDEN: modern chat Hindi; film-song slang; English mix-ins in sung lines; flat kids-bhajan wording; ANY Telugu script (తెలుగు).
 - Pallavi = nama-rich, chantable sacred refrain. Charanams = poetic bhakti verses. Slokam may use elevated Sanskrit (original only).
 - Title: prefer Hindi Devanagari with traditional flavour when it fits.
 - Only Hindu deities/avataras (Shiva, Parvati, Sri Vishnu, Sri Rama, Krishna, Narasimha, Lakshmi, Saraswati, Durga, Hanuman, Ganesha, Subrahmanya, Venkateswara, Surya, Ayyappa, Annapurna…). Never Sai Baba / Shirdi.
@@ -177,7 +256,7 @@ BRIEF
 {regen}
 {echo}
 
-{UNIQUENESS_BLOCK}
+{uniqueness}
 
 {form}
 

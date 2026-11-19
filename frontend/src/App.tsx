@@ -96,6 +96,8 @@ type Song = {
   id: string;
   title: string;
   deity?: string | null;
+  language?: string | null;
+  channel_key?: string | null;
   stage: string;
   style_prompt?: string | null;
   music_genre?: string | null;
@@ -484,6 +486,7 @@ function SongList() {
 }
 
 function SongDetail() {
+  const channel = useStudioChannel();
   const { songId } = useParams();
   const [song, setSong] = useState<Song | null>(null);
   const [pack, setPack] = useState<SunoPack | null>(null);
@@ -702,6 +705,7 @@ function SongDetail() {
           title: title.trim() || song?.title || null,
           vocal_preference: song?.vocal_preference || "m",
           music_genre: song?.music_genre || null,
+          language: song?.language || (channel === "hi" ? "hi" : "te"),
         }),
       });
       if (!res.ok) throw new Error(await res.text());

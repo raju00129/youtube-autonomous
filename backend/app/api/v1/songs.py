@@ -265,9 +265,32 @@ class AgentGenerateRequest(BaseModel):
     deity: str | None = Field(default=None, max_length=120)
     topic: str | None = Field(default=None, max_length=2000)
     vocal_preference: str | None = Field(default="m", max_length=40)
-    music_genre: str | None = Field(default="Telugu devotional / light Carnatic", max_length=200)
-    language: str = Field(default="te", max_length=40)
+    # None = let server pick from song / channel (do NOT default to Telugu)
+    music_genre: str | None = Field(default=None, max_length=200)
+    language: str | None = Field(default=None, max_length=40)
     approve: bool = False
+
+
+def _resolve_lyrics_language(
+    *,
+    body_language: str | None,
+    song: SongProject | None = None,
+    channel_key: str | None = None,
+) -> str:
+    """Prefer explicit body language, then song, then channel. Heal hi-channel → Telugu bug."""
+    song_ck = (getattr(song, "channel_key", None) if song else None) or ""
+    ck = (song_ck or channel_key or "te").strip().lower() or "te"
+    explicit = (body_language or "").strip()
+    if explicit:
+        lang = explicit
+    elif song and (song.language or "").strip():
+        lang = str(song.language).strip()
+    else:
+        lang = default_language(ck)
+    # Songs on Hindi channel must generate Hindi (UI used to omit language → defaulted te)
+    if ck == "hi" and not lang.lower().startswith("hi"):
+        lang = "hi"
+    return lang
 
 
 @router.post("/generate")
@@ -287,12 +310,15 @@ def generate_song_with_agent(
         import time as _time
 
         avoid = recent_lyrics_echo(db, deity=body.deity, limit=4)
+        lang = _resolve_lyrics_language(
+            body_language=body.language, channel_key=channel_key
+        )
         generated = llm.generate_lyrics(
             title=body.title,
             deity=body.deity,
             topic=body.topic,
             vocal=body.vocal_preference,
-            language=body.language,
+            language=lang,
             music_genre=body.music_genre,
             avoid_echo=avoid or None,
             variation_seed=f"create-{int(_time.time())}",
@@ -300,7 +326,9 @@ def generate_song_with_agent(
     except (GeminiLlmError, OpenAILlmError, CursorLlmError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    lang = (body.language or default_language(channel_key)).strip() or default_language(channel_key)
+    lang = _resolve_lyrics_language(
+        body_language=body.language, channel_key=channel_key
+    )
     style = enrich_style_prompt(
         (generated.get("style_prompt") or "").strip()
         or _default_style(body.deity, body.music_genre, body.vocal_preference, language=lang),
@@ -369,14 +397,23 @@ def regenerate_lyrics_with_agent(
     song_id: uuid.UUID,
     body: AgentGenerateRequest,
     db: Session = Depends(get_db),
+    channel_key: ChannelKey = Depends(channel_key_dependency),
 ) -> dict:
-    """Re-run OpenAI (Cursor composer fallback) and append a new lyrics version."""
+    """Re-run Gemini (Cursor/OpenAI fallback) and append a new lyrics version."""
     song = _load_song(db, song_id)
     if not llm.is_configured():
         raise HTTPException(
             status_code=503,
             detail="Set GEMINI_API_KEY for lyrics (or CURSOR_API_KEY / OPENAI_API_KEY fallback)",
         )
+
+    lang = _resolve_lyrics_language(
+        body_language=body.language,
+        song=song,
+        channel_key=getattr(song, "channel_key", None) or channel_key,
+    )
+    if song.language != lang:
+        song.language = lang
 
     previous = song.lyrics_versions[-1].body if song.lyrics_versions else None
     previous_style = song.style_prompt
@@ -395,7 +432,7 @@ def regenerate_lyrics_with_agent(
             deity=body.deity or song.deity,
             topic=body.topic or song.notes,
             vocal=body.vocal_preference or song.vocal_preference,
-            language=body.language or song.language,
+            language=lang,
             music_genre=body.music_genre or song.music_genre,
             regenerate=True,
             previous_lyrics=previous,
@@ -414,10 +451,10 @@ def regenerate_lyrics_with_agent(
             body.deity or song.deity,
             body.music_genre or song.music_genre,
             vocal,
-            language=song.language,
+            language=lang,
         ),
         vocal=vocal,
-        language=song.language,
+        language=lang,
     )
     lyrics_body = str(generated["lyrics"]).strip()
     next_version = (song.lyrics_versions[-1].version + 1) if song.lyrics_versions else 1

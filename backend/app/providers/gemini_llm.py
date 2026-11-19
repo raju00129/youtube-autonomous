@@ -107,16 +107,25 @@ def generate_lyrics(
     ]
     models = [m for i, m in enumerate(model_fallbacks) if m and m not in model_fallbacks[:i]]
 
+    hindi = (language or "te").strip().lower().startswith("hi")
+    system_text = (
+        "You write original Hindi Devanagari temple bhajan/kirtan lyrics as strict JSON. "
+        "Sung lines MUST be Hindi Devanagari only — never Telugu script. "
+        "Deep traditional bhakti diction, crystal-clear singability, "
+        "native Hindi pronunciation-friendly lines only."
+        if hindi
+        else (
+            "You write original Telugu temple bhajan/keerthana lyrics as strict JSON. "
+            "Sung lines MUST be Telugu script only — never Hindi Devanagari. "
+            "Deep traditional bhakti diction, crystal-clear singability, "
+            "native Telugu pronunciation-friendly lines only."
+        )
+    )
     payload = {
         "systemInstruction": {
             "parts": [
                 {
-                    "text": (
-                        "You write original temple bhajan/keerthana lyrics as strict JSON. "
-                        "Match the requested language script (Telugu or Hindi Devanagari). "
-                        "Deep traditional bhakti diction, crystal-clear singability, "
-                        "native pronunciation-friendly lines only."
-                    )
+                    "text": system_text
                 }
             ]
         },

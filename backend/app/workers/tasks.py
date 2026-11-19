@@ -452,7 +452,7 @@ def song_auto_publish_evening_short(self, song_id: str) -> dict[str, Any]:
 
 @celery_app.task(name="app.workers.tasks.pipeline_tick")
 def pipeline_tick() -> dict[str, Any]:
-    """Beat entry: enqueue due prep (−1h), morning publish, evening Short."""
+    """Beat entry: enqueue due prep (−1h) and publish (long + Short per daypart)."""
     from app.db import SessionLocal
     from app.services_pipeline import (
         songs_due_for_evening_short,

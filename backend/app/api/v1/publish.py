@@ -50,9 +50,8 @@ def readiness(song: SongProject) -> dict:
         sum(1 for s in live_shorts if getattr(s, "final_clip_path", None)) >= n_shorts
     )
     reviewable = has_lyrics and has_music
-    # Morning long needs final + Short cut (evening reuses same A/V)
     need_long = bool(targets["longform"])
-    need_short_assets = need_long or bool(targets["shorts"])
+    need_short_assets = bool(targets["shorts"])
     deliverable_ok = (has_final if need_long else True) and (
         shorts_final if need_short_assets else True
     )
@@ -70,16 +69,12 @@ def readiness(song: SongProject) -> dict:
         {"key": "video", "label": "Kling visual clip (720p 16:9)", "ok": has_video},
         {
             "key": "daypart",
-            "label": (
-                "Morning → long video now; evening Short from this same video"
-                if targets["longform"]
-                else "Evening → Short from morning video (no new A/V)"
-            ),
+            "label": f"{daypart.capitalize()} → long video + Short together",
             "ok": True,
         },
         {
             "key": "shorts_clips",
-            "label": "Short cut from morning clip (for evening)",
+            "label": "Short cut from this song’s clip",
             "ok": shorts_cut if need_short_assets else True,
         },
         {
@@ -89,7 +84,7 @@ def readiness(song: SongProject) -> dict:
         },
         {
             "key": "shorts_final",
-            "label": "Short final mixed (evening upload)",
+            "label": "Short final mixed (uploads with long video)",
             "ok": shorts_final if need_short_assets else True,
         },
         {"key": "thumbnail", "label": "Thumbnail (logo + deity + title)", "ok": has_thumbnail},

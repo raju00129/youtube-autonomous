@@ -1607,6 +1607,8 @@ type ScheduleSlot = {
   song_stage?: string | null;
   youtube_url?: string | null;
   youtube_video_id?: string | null;
+  short_youtube_url?: string | null;
+  short_youtube_video_id?: string | null;
   auto_deity?: string | null;
   auto_mood?: string | null;
   suggestion?: {
@@ -1655,7 +1657,7 @@ function WeekSchedule() {
     };
     setPlanNote(
       body.data.plan?.note ??
-        "Create morning video only — Short is cut with it and auto-publishes at evening.",
+        "Each day: morning song (video + Short ~06:00) and evening song (video + Short ~19:00).",
     );
     if (body.data.days?.length) {
       setDays(body.data.days);
@@ -1749,7 +1751,7 @@ function WeekSchedule() {
         <p className="text-sm uppercase tracking-[0.25em] text-temple/80">
           Weekly plan · {channelLabel(channel)}
         </p>
-        <h1 className="font-display text-4xl text-ink">Morning video · evening Short auto</h1>
+        <h1 className="font-display text-4xl text-ink">Morning + evening · video + Short each</h1>
         <p className="max-w-2xl text-ink/70">{planNote}</p>
       </header>
 
@@ -1806,7 +1808,7 @@ function WeekSchedule() {
                 {weekday} · {day.date}
               </h2>
               <p className="mb-4 text-sm text-ink/55">
-                Mood: {day.slots[0]?.auto_mood ?? "—"} · Create morning only · Short auto at evening
+                Mood: {day.slots[0]?.auto_mood ?? "—"} · Each slot: long video + Short
               </p>
               <div className="grid gap-3 md:grid-cols-2">
                 {day.slots.map((slot) => (
@@ -1833,37 +1835,26 @@ function WeekSchedule() {
                     <p className="font-medium text-ink pr-20">
                       {slot.daypart_label ?? slot.daypart ?? "slot"} ·{" "}
                       {slot.auto_deity ?? slot.suggestion?.deity ?? "—"} ·{" "}
-                      {slot.format_label ??
-                        (slot.publish_format === "short" || slot.daypart === "evening"
-                          ? "Short"
-                          : "long video")}
+                      {slot.format_label ?? "long video + Short"}
                     </p>
                     {slot.song_title && (
                       <p className="text-sm text-ink/70 line-clamp-2">{slot.song_title}</p>
                     )}
-                    {(slot.publish_format !== "short" && slot.daypart !== "evening") && (
-                      <input
-                        className="w-full border border-ink/15 bg-white px-3 py-2 text-sm"
-                        defaultValue={slot.title_hint ?? ""}
-                        placeholder={`${slot.daypart ?? "slot"} title hint`}
-                        onBlur={(e) => void saveHint(slot.id, e.target.value)}
-                        disabled={!!slot.published}
-                      />
-                    )}
+                    <input
+                      className="w-full border border-ink/15 bg-white px-3 py-2 text-sm"
+                      defaultValue={slot.title_hint ?? ""}
+                      placeholder={`${slot.daypart ?? "slot"} title hint`}
+                      onBlur={(e) => void saveHint(slot.id, e.target.value)}
+                      disabled={!!slot.published}
+                    />
                     <label className="grid gap-1 text-xs text-ink/60">
-                      {slot.publish_format === "short" || slot.daypart === "evening"
-                        ? "Evening Short time (auto from morning video)"
-                        : "Publish time — saves when you pick"}
+                      Publish time — saves when you pick
                       <input
                         key={`${slot.id}-${slot.publish_at ?? "empty"}`}
                         type="datetime-local"
                         className="border border-ink/15 bg-white px-2 py-1.5 text-sm"
                         defaultValue={toLocalInputValue(slot.publish_at)}
-                        disabled={
-                          !!slot.published ||
-                          slot.publish_format === "short" ||
-                          slot.daypart === "evening"
-                        }
+                        disabled={!!slot.published}
                         onChange={(e) => {
                           if (!e.target.value) return;
                           void savePublishAt(slot.id, e.target.value);
@@ -1871,43 +1862,30 @@ function WeekSchedule() {
                       />
                     </label>
                     <p className="text-xs text-ink/50">
-                      {slot.published
-                        ? "published"
-                        : slot.status === "waits_for_morning"
-                          ? "waiting — create morning video"
-                          : slot.status === "waiting_morning"
-                            ? "waiting — finish morning Mix/publish"
-                            : slot.status === "queued_evening"
-                              ? "queued — Short auto-publishes at evening"
-                              : slot.status === "auto_from_morning"
-                                ? "auto from morning video"
-                                : slot.status}
+                      {slot.published ? "published" : slot.status}
                       {slot.song_stage ? ` · song: ${slot.song_stage}` : ""}
                     </p>
                     {slot.published && slot.youtube_url ? (
-                      <a
-                        href={slot.youtube_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="bg-temple px-3 py-2 text-center text-sm font-medium text-white"
-                      >
-                        {slot.publish_format === "short" || slot.daypart === "evening"
-                          ? "Watch Short"
-                          : "Watch long video"}
-                      </a>
-                    ) : slot.publish_format === "short" || slot.daypart === "evening" ? (
-                      slot.song_id ? (
-                        <Link
-                          to={`/songs/${slot.song_id}`}
-                          className="border border-ink/20 bg-white px-3 py-2 text-center text-sm text-ink"
+                      <div className="grid gap-2">
+                        <a
+                          href={slot.youtube_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="bg-temple px-3 py-2 text-center text-sm font-medium text-white"
                         >
-                          Open morning song
-                        </Link>
-                      ) : (
-                        <p className="border border-ink/10 bg-ink/5 px-3 py-2 text-center text-sm text-ink/60">
-                          Auto — create morning video; Short publishes here at evening
-                        </p>
-                      )
+                          Watch long video
+                        </a>
+                        {slot.short_youtube_url && (
+                          <a
+                            href={slot.short_youtube_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="border border-temple/40 bg-white px-3 py-2 text-center text-sm font-medium text-temple"
+                          >
+                            Watch Short
+                          </a>
+                        )}
+                      </div>
                     ) : slot.song_id ? (
                       <Link
                         to={`/songs/${slot.song_id}`}
@@ -1925,7 +1903,9 @@ function WeekSchedule() {
                         onClick={() => void materialize(slot.id)}
                         className="bg-ink px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
                       >
-                        {busyIds[slot.id] ? "Starting…" : "Create morning video"}
+                        {busyIds[slot.id]
+                          ? "Starting…"
+                          : `Create ${slot.daypart === "evening" ? "evening" : "morning"} song`}
                       </button>
                     )}
                   </div>

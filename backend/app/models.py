@@ -146,7 +146,7 @@ class ShortProject(Base):
 
 
 class ScheduleSlot(Base):
-    """Weekly plan: morning long video + evening Short (one upload each)."""
+    """Weekly plan: morning + evening each get long video + Short."""
 
     __tablename__ = "schedule_slots"
 
@@ -155,7 +155,7 @@ class ScheduleSlot(Base):
     slot_date: Mapped[date] = mapped_column(Date, nullable=False)
     # te | hi — parallel week boards per YouTube channel
     channel_key: Mapped[str] = mapped_column(String(8), default="te", index=True)
-    # morning | evening — morning long video; evening Short
+    # morning | evening — each daypart is its own song (video + Short)
     daypart: Mapped[str] = mapped_column(String(20), default="morning", nullable=False)
     publish_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     title_hint: Mapped[str | None] = mapped_column(String(200), nullable=True)

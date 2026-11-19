@@ -37,7 +37,7 @@ def _daypart_from_when(when: datetime) -> str:
 
 
 def daypart_for_song(song: SongProject) -> str:
-    """Morning = long video only; evening = Short only (channel strategy)."""
+    """Morning or evening slot for this song (both publish long video + Short)."""
     for slot in song.schedule_slots or []:
         part = (getattr(slot, "daypart", None) or "").strip().lower()
         if part in {"morning", "evening"}:
@@ -48,11 +48,9 @@ def daypart_for_song(song: SongProject) -> str:
 
 
 def publish_targets_for_daypart(daypart: str) -> dict[str, bool]:
-    """What to upload for this daypart."""
-    part = (daypart or "morning").strip().lower()
-    if part == "evening":
-        return {"longform": False, "shorts": True}
-    return {"longform": True, "shorts": False}
+    """Both morning and evening publish a long video + Short together."""
+    _ = daypart
+    return {"longform": True, "shorts": True}
 
 
 def evening_short_at(day: datetime) -> datetime:
@@ -138,21 +136,20 @@ def short_stagger_hours_for(when: datetime) -> int:
 
 
 def short_release_at(main_when: datetime, slot_index: int) -> datetime:
-    """Shorts publish at evening of the same day (from morning long video)."""
+    """Short publishes with the long video; Short 2+ can stagger later if enabled."""
     when = main_when
     if when.tzinfo is None:
         when = when.replace(tzinfo=IST)
-    evening = evening_short_at(when)
-    # Only Short 1 is used; keep stagger for a paused Short 2 if ever re-enabled
+    # Only Short 1 is used by default; keep stagger for a paused Short 2
     if int(slot_index) >= 2:
-        hours = short_stagger_hours_for(evening)
+        hours = short_stagger_hours_for(when)
         if hours > 0:
-            return evening + timedelta(hours=hours)
-    return evening
+            return when + timedelta(hours=hours)
+    return when
 
 
 def apply_short_publish_times(song: SongProject, main_when: datetime) -> None:
-    """Stamp each Short's publish_at to that day's evening slot."""
+    """Stamp each Short's publish_at with the long-form release time."""
     for short in song.shorts or []:
         short.publish_at = short_release_at(main_when, int(short.slot_index))
 
@@ -370,7 +367,7 @@ def publish_song_to_youtube(
     publish_at: datetime | None = None,
     on_progress: ProgressCB = None,
 ) -> dict[str, Any]:
-    """Morning = long video only. Evening Short is cut from that morning song later."""
+    """Publish long video + Short together for morning or evening songs."""
     from app.channels import get_channel
 
     ck = _song_channel_key(song)
@@ -401,23 +398,7 @@ def publish_song_to_youtube(
     daypart = daypart_for_song(song)
     targets = publish_targets_for_daypart(daypart)
 
-    # Legacy evening song rows → publish Short from same-day morning instead
-    if targets["shorts"] and not targets["longform"]:
-        morning = same_day_morning_song(
-            db, on_day=song.publish_at or when, exclude_id=song.id, require_youtube=True
-        )
-        if morning is None and song.youtube_video_id:
-            morning = song
-        if morning is None:
-            raise PublishError(
-                "Evening Short needs today's morning long video — create/publish morning first"
-            )
-        return publish_evening_short_from_morning(
-            db, morning, publish_now=publish_now, on_progress=on_progress
-        )
-
     privacy, publish_at_iso = _youtube_schedule_fields(when)
-    # Short from this same morning A/V goes out at evening
     apply_short_publish_times(song, when)
 
     results: dict[str, Any] = {
@@ -483,36 +464,29 @@ def publish_song_to_youtube(
         logger.warning("playlist add failed: %s", exc)
         results["playlist_error"] = str(exc)
 
-    report(on_progress, 70, "Morning: long video only — Short waits for evening…")
-    evening = evening_short_at(when)
-    results["evening_short_at"] = evening.isoformat()
-    apply_short_publish_times(song, when)
-
-    # Keep schedule evening slot pointed at this morning song
-    try:
-        from app.models import ScheduleSlot
-
-        local = when.astimezone(IST) if when.tzinfo else when.replace(tzinfo=IST)
-        evening_slot = db.scalar(
-            select(ScheduleSlot)
-            .where(ScheduleSlot.slot_date == local.date())
-            .where(ScheduleSlot.daypart == "evening")
+    if targets.get("shorts"):
+        report(on_progress, 70, "Uploading Short with the long video…")
+        results["shorts"] = _upload_shorts_from_song(
+            db,
+            song,
+            when=when,
+            video_id=video_id,
+            url=url,
+            on_progress=on_progress,
         )
-        if evening_slot is not None and evening_slot.status != "skipped":
-            evening_slot.song_id = song.id
-            if evening_slot.status in {"planned", "song_created", "linked_morning"}:
-                evening_slot.status = "auto_from_morning"
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("evening slot auto-link failed: %s", exc)
 
     song.publish_at = when
     song.stage = "published"
     db.flush()
-    report(on_progress, 100, "Published morning long video")
-    note = (
-        f"Published morning long-form: {song.youtube_url}. "
-        f"Evening Short (from this video) auto-publishes ~{evening.strftime('%H:%M IST')}."
-    )
+    short_bits = [
+        f"Short {s['slot_index']}: {s['url']}"
+        for s in (results.get("shorts") or [])
+        if s.get("url")
+    ]
+    report(on_progress, 100, f"Published {daypart} long video + Short")
+    note = f"Published {daypart} long-form: {song.youtube_url}"
+    if short_bits:
+        note += " · " + " · ".join(short_bits)
     return {
         "song_id": str(song.id),
         "stage": song.stage,

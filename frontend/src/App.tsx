@@ -200,16 +200,20 @@ type SunoPack = {
 };
 
 function Dashboard() {
+  const channel = useStudioChannel();
   const [ready, setReady] = useState<ReadyResponse | null>(null);
   const [providers, setProviders] = useState<ProvidersResponse["data"] | null>(null);
+  const [ytConnected, setYtConnected] = useState<boolean | null>(null);
+  const [ytTitle, setYtTitle] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     async function load() {
       try {
-        const [readyRes, providerRes] = await Promise.all([
+        const [readyRes, providerRes, ytRes] = await Promise.all([
           fetch(`${API_BASE}/ready`),
           fetch(`${API_BASE}/api/v1/system/providers`),
+          fetch(`${API_BASE}/api/v1/youtube/status`),
         ]);
         if (!readyRes.ok || !providerRes.ok) {
           throw new Error("Backend not reachable");
@@ -217,13 +221,23 @@ function Dashboard() {
         setReady((await readyRes.json()) as ReadyResponse);
         const body = (await providerRes.json()) as ProvidersResponse;
         setProviders(body.data);
+        if (ytRes.ok) {
+          const yt = (await ytRes.json()) as {
+            data: { connected?: boolean; channel?: { title?: string }; channel_key?: string };
+          };
+          setYtConnected(!!yt.data.connected);
+          setYtTitle(yt.data.channel?.title ?? null);
+        } else {
+          setYtConnected(false);
+          setYtTitle(null);
+        }
         setError(null);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to load status");
       }
     }
     void load();
-  }, []);
+  }, [channel]);
 
   return (
     <main className="mx-auto flex min-h-screen max-w-5xl flex-col gap-10 px-6 py-12">
@@ -233,8 +247,22 @@ function Dashboard() {
           Ragam Spiritual
         </h1>
         <p className="max-w-2xl text-lg text-ink/75">
-          Prepare Telugu lyrics here, generate in your Suno Pro app, upload the MP3 — we continue
-          from there.
+          Prepare lyrics here, generate in your Suno Pro app, upload the MP3 — we continue from
+          there. Telugu and Hindi each need their own YouTube Connect.
+        </p>
+        <p
+          className={
+            ytConnected
+              ? "border border-temple/30 bg-temple/5 px-4 py-2 text-sm text-temple"
+              : "border border-saffron/40 bg-white/50 px-4 py-2 text-sm text-saffron"
+          }
+        >
+          YouTube ({channelLabel(channel)}):{" "}
+          {ytConnected == null
+            ? "…"
+            : ytConnected
+              ? `connected${ytTitle ? ` · ${ytTitle}` : ""}`
+              : "not connected — switch to this channel, then Connect YouTube and pick the matching YouTube channel"}
         </p>
         <div className="flex flex-wrap gap-3">
           <Link
@@ -1173,11 +1201,13 @@ function SongDetail() {
           Token expired / 401?{" "}
           <a
             className="font-medium text-temple underline"
-            href={withPortalKey(`${API_BASE}/api/v1/youtube/auth`)}
+            href={withPortalKey(
+              `${API_BASE}/api/v1/youtube/auth?channel_key=${channel}`,
+            )}
             target="_blank"
             rel="noreferrer"
           >
-            Reconnect YouTube OAuth
+            Reconnect YouTube OAuth ({channel === "hi" ? "Hindi" : "Telugu"})
           </a>
           {" "}then hit Refresh list.
         </p>
@@ -2277,10 +2307,12 @@ export default function App() {
             Noise remove
           </Link>
           <a
-            href={`${API_BASE}/api/v1/youtube/auth?channel_key=${channel}`}
+            href={withPortalKey(
+              `${API_BASE}/api/v1/youtube/auth?channel_key=${channel}`,
+            )}
             className="text-ink/70 hover:text-ink"
           >
-            Connect YouTube
+            Connect YouTube ({channel === "hi" ? "Hindi" : "Telugu"})
           </a>
         </div>
       </nav>

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.channels import ChannelKey, channel_key_dependency, get_channel, normalize_channel_key
@@ -23,8 +23,11 @@ def youtube_channels() -> dict:
 @router.get("/auth")
 def youtube_auth(
     channel_key: str | None = Query(default=None),
+    x_channel_key: str | None = Header(default=None, alias="X-Channel-Key"),
 ) -> RedirectResponse:
-    ck = normalize_channel_key(channel_key)
+    # Prefer ?channel_key= (browser <a> clicks send no X-Channel-Key).
+    # Missing query used to default to te — Hindi Connect then overwrote/never created hi token.
+    ck = normalize_channel_key(channel_key or x_channel_key)
     status = yt.connection_status(ck)
     if not status["oauth_client_configured"]:
         raise HTTPException(status_code=500, detail="Google OAuth client is not configured")
@@ -64,6 +67,8 @@ def youtube_callback(
             f"<strong>{profile.display_name}</strong> ({ck}).</p>"
         )
 
+    other = "te" if ck == "hi" else "hi"
+    other_profile = get_channel(other)
     html = f"""
     <html><body style="font-family:system-ui;padding:2rem;background:#f7f1e8;color:#1a1410">
       <h1>YouTube connected — {profile.display_name}</h1>
@@ -72,6 +77,10 @@ def youtube_callback(
       <p>Channel ID: <code>{channel.get('id')}</code></p>
       <p>Handle: <code>{channel.get('custom_url') or channel.get('configured_handle')}</code></p>
       {match_note}
+      <p>Telugu and Hindi each need their own Connect. This token is only for
+         <strong>{ck}</strong>. To connect the other channel, switch the studio
+         toggle to {other_profile.display_name} and click Connect again
+         (<a href="/api/v1/youtube/auth?channel_key={other}">connect {other}</a>).</p>
       <p><a href="/">Back to studio</a> ·
          <a href="/api/v1/youtube/channel?channel_key={ck}">API channel JSON</a></p>
     </body></html>

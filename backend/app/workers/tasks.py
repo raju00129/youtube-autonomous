@@ -248,6 +248,7 @@ def song_fill_lyrics(
     energy_hint: str | None = None,
     approve: bool = False,
     daypart: str | None = "morning",
+    language: str | None = None,
 ) -> dict[str, Any]:
     """Background Gemini lyrics after a fast song create (allows parallel creates)."""
     from app.content_templates import fill_shorts_pair, fill_youtube_longform, sync_song_publish_copy
@@ -275,16 +276,16 @@ def song_fill_lyrics(
         if song.lyrics_versions:
             return {"song_id": song_id, "skipped": True, "reason": "already_has_lyrics"}
 
-        # Prefer channel_key so Hindi schedule songs never generate Telugu
+        # Prefer explicit language arg, then channel_key, so Hindi never gets Telugu
         ck = (getattr(song, "channel_key", None) or "te").strip().lower()
-        song_lang = (song.language or "").strip()
+        explicit = (language or "").strip()
+        song_lang = explicit or (song.language or "").strip()
         if ck == "hi" and not song_lang.lower().startswith("hi"):
             song_lang = "hi"
-            song.language = "hi"
         elif not song_lang:
             song_lang = "hi" if ck == "hi" else "te"
-            song.language = song_lang
-        lang_label = "Hindi" if song_lang.startswith("hi") else "Telugu"
+        song.language = song_lang
+        lang_label = "Hindi" if song_lang.lower().startswith("hi") else "Telugu"
         celery_progress(
             self, 8, f"Writing {lang_label} lyrics with Gemini…", song_id=song_id
         )

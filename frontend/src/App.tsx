@@ -1784,8 +1784,14 @@ function WeekSchedule() {
         <p className="text-sm uppercase tracking-[0.25em] text-temple/80">
           Weekly plan · {channelLabel(channel)}
         </p>
-        <h1 className="font-display text-4xl text-ink">Morning + evening · video + Short each</h1>
+        <h1 className="font-display text-4xl text-ink">
+          {channel === "hi" ? "Hindi" : "Telugu"} · morning + evening · video + Short
+        </h1>
         <p className="max-w-2xl text-ink/70">{planNote}</p>
+        <p className="text-sm font-medium text-ink/55">
+          Independent board for {channelLabel(channel)} — switching channels loads a separate week
+          (lyrics: {channel === "hi" ? "Hindi Devanagari" : "Telugu script"}).
+        </p>
       </header>
 
       <div className="flex flex-wrap items-end gap-3">
@@ -1866,6 +1872,14 @@ function WeekSchedule() {
                       </div>
                     )}
                     <p className="font-medium text-ink pr-20">
+                      <span
+                        className={
+                          channel === "hi" ? "text-saffron" : "text-temple"
+                        }
+                      >
+                        {channel === "hi" ? "HI" : "TE"}
+                      </span>
+                      {" · "}
                       {slot.daypart_label ?? slot.daypart ?? "slot"} ·{" "}
                       {slot.auto_deity ?? slot.suggestion?.deity ?? "—"} ·{" "}
                       {slot.format_label ?? "long video + Short"}
@@ -2236,8 +2250,14 @@ export default function App() {
             Ragam
           </Link>
           <ChannelSwitch />
-          <span className="hidden text-xs text-ink/45 sm:inline">
-            Producing for {channelLabel(channel)} channel
+          <span
+            className={
+              channel === "hi"
+                ? "rounded-full bg-saffron/15 px-2.5 py-1 text-xs font-semibold text-saffron"
+                : "rounded-full bg-temple/10 px-2.5 py-1 text-xs font-semibold text-temple"
+            }
+          >
+            {channel === "hi" ? "Hindi · हिन्दी" : "Telugu · తెలుగు"}
           </span>
         </div>
         <div className="flex flex-wrap gap-4 text-sm">
@@ -2264,13 +2284,14 @@ export default function App() {
           </a>
         </div>
       </nav>
+      {/* key=channel forces a full remount so Telugu fields cannot linger on Hindi */}
       <Routes>
-        <Route path="/" element={<Dashboard />} />
-        <Route path="/ready" element={<ReadyQueue />} />
-        <Route path="/schedule" element={<WeekSchedule />} />
-        <Route path="/songs" element={<SongList />} />
+        <Route path="/" element={<Dashboard key={channel} />} />
+        <Route path="/ready" element={<ReadyQueue key={channel} />} />
+        <Route path="/schedule" element={<WeekSchedule key={channel} />} />
+        <Route path="/songs" element={<SongList key={channel} />} />
         <Route path="/songs/:songId" element={<SongDetail />} />
-        <Route path="/branding" element={<BrandingPage />} />
+        <Route path="/branding" element={<BrandingPage key={channel} />} />
         <Route path="/denoise" element={<DenoisePage />} />
       </Routes>
     </div>

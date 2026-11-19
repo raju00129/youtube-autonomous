@@ -531,6 +531,7 @@ def materialize_slot(
             energy_hint=suggestion.get("energy_hint"),
             approve=body.approve_lyrics,
             daypart=daypart,
+            language=lang,
         )
         lyrics_job_id = str(async_result.id)
 

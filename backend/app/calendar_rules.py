@@ -212,6 +212,17 @@ _EVENING_PREFIXES = [
     "Sandhya mood as colour only — invent a new poetic focus for this deity",
     "Dusk temple hush — deep karuna / nama, avoid cookie-cutter aarti templates",
 ]
+_MORNING_PREFIXES_HI = [
+    "Hindi Devanagari bhajan — fresh morning bhakti angle (not another pratah-stuti clone)",
+    "North-Indian temple mood — soft light; write sung lines in हिन्दी only",
+    "Quiet hour devotion — cool stone, shankh; unique Hindi imagery each day",
+    "Dawn as colour only — focus on deity leela/guna in Hindi Devanagari, not clock-time lyrics",
+]
+_EVENING_PREFIXES_HI = [
+    "Hindi sandhya aarti mood — deep diya light; sung lines MUST be Devanagari हिन्दी",
+    "Evening kirtan colour only — invent a new Hindi poetic focus for this deity",
+    "Dusk temple hush — karuna / nama in Hindi; avoid cookie-cutter aarti templates",
+]
 
 DAYPART_FLAVOR = {
     # Channel strategy: morning + evening each get 1 long video + 1 Short.
@@ -288,10 +299,13 @@ def suggest_for_date(
     vocal = day.get("vocal_preference", "m")
     lang = (language or "te").strip().lower()
     # Rotate daypart colour + deity angle so lyrics don't clone yesterday
+    hindi = lang.startswith("hi")
     if part == "morning":
-        prefix = _MORNING_PREFIXES[(d.toordinal() + weekday) % len(_MORNING_PREFIXES)]
+        prefixes = _MORNING_PREFIXES_HI if hindi else _MORNING_PREFIXES
+        prefix = prefixes[(d.toordinal() + weekday) % len(prefixes)]
     else:
-        prefix = _EVENING_PREFIXES[(d.toordinal() + weekday) % len(_EVENING_PREFIXES)]
+        prefixes = _EVENING_PREFIXES_HI if hindi else _EVENING_PREFIXES
+        prefix = prefixes[(d.toordinal() + weekday) % len(prefixes)]
     angles = day.get("topic_angles") or []
     angle = ""
     if angles:
@@ -299,9 +313,15 @@ def suggest_for_date(
     base_topic = day["topic"]
     # Beautiful deity song only — do not force calendar-month festivals
     # (Kartika, Navaratri, etc.) into every topic.
+    script_rule = (
+        "CRITICAL: write all sung lyrics in Hindi Devanagari (हिन्दी), never Telugu script. "
+        if hindi
+        else "CRITICAL: write all sung lyrics in Telugu script (తెలుగు), never Hindi Devanagari. "
+    )
     topic = (
         f"{prefix}. {base_topic}. "
         + (f"Today's unique angle: {angle}. " if angle else "")
+        + script_rule
         + "Timeless temple bhakti — unique title/Pallavi for this draft; "
         "do not clone recent channel songs."
     )

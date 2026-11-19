@@ -316,13 +316,23 @@ function SongList() {
   const [generating, setGenerating] = useState(false);
 
   const load = useCallback(async () => {
+    const forChannel = channel;
     const res = await fetch(`${API_BASE}/api/v1/songs`);
     if (!res.ok) throw new Error("Failed to load songs");
+    if (getChannelKey() !== forChannel) return; // stale response after channel switch
     const body = (await res.json()) as { data: Song[] };
     setSongs(body.data);
   }, [channel]);
 
   useEffect(() => {
+    setSongs([]);
+    setTitle("");
+    setDeity("");
+    setTopic("");
+    setLyrics(
+      "[Pallavi]\n\n[Anupallavi]\n\n[Pallavi]\n\n[Slokam]\n\n[Pallavi]\n\n[Charanam 1]\n\n[Pallavi]\n\n[Charanam 2]\n\n[Pallavi]\n",
+    );
+    setError(null);
     void load().catch((err) => setError(err instanceof Error ? err.message : "Load failed"));
   }, [load]);
 
@@ -1613,6 +1623,7 @@ type ScheduleSlot = {
   youtube_video_id?: string | null;
   short_youtube_url?: string | null;
   short_youtube_video_id?: string | null;
+  channel_key?: string | null;
   auto_deity?: string | null;
   auto_mood?: string | null;
   suggestion?: {
@@ -1648,17 +1659,31 @@ function WeekSchedule() {
   const [planNote, setPlanNote] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busyIds, setBusyIds] = useState<Record<string, boolean>>({});
+  const [saveNotice, setSaveNotice] = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    const forChannel = channel;
     const ensure = await fetch(`${API_BASE}/api/v1/schedule/weeks/ensure`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ week_start: weekStart }),
     });
     if (!ensure.ok) throw new Error(await ensure.text());
+    if (getChannelKey() !== forChannel) return; // ignore stale Telugu/Hindi response
     const body = (await ensure.json()) as {
-      data: { days?: ScheduleDay[]; slots: ScheduleSlot[]; plan?: { note?: string; shorts_per_day?: number } };
+      data: {
+        days?: ScheduleDay[];
+        slots: ScheduleSlot[];
+        plan?: { note?: string; shorts_per_day?: number };
+        channel_key?: string;
+      };
+      meta?: { channel_key?: string };
     };
+    const echoed =
+      body.meta?.channel_key ||
+      body.data.channel_key ||
+      body.data.slots?.[0]?.channel_key;
+    if (echoed && echoed !== forChannel) return;
     setPlanNote(
       body.data.plan?.note ??
         "Each day: morning song (video + Short ~06:00) and evening song (video + Short ~19:00).",
@@ -1677,10 +1702,14 @@ function WeekSchedule() {
   }, [weekStart, channel]);
 
   useEffect(() => {
+    // Clear previous channel's board immediately so fields don't linger
+    setDays([]);
+    setBusyIds({});
+    setError(null);
+    setSaveNotice(null);
     void load().catch((err) => setError(err instanceof Error ? err.message : "Load failed"));
   }, [load]);
 
-  const [saveNotice, setSaveNotice] = useState<string | null>(null);
   const weekEnd = addDaysISO(weekStart, 6);
 
   async function saveHint(slotId: string, title_hint: string) {
@@ -1817,7 +1846,7 @@ function WeekSchedule() {
               <div className="grid gap-3 md:grid-cols-2">
                 {day.slots.map((slot) => (
                   <div
-                    key={slot.id}
+                    key={`${channel}-${slot.id}`}
                     className={`relative grid gap-2 border p-3 ${
                       slot.published
                         ? "border-temple/40 bg-temple/5"
@@ -1845,6 +1874,7 @@ function WeekSchedule() {
                       <p className="text-sm text-ink/70 line-clamp-2">{slot.song_title}</p>
                     )}
                     <input
+                      key={`${channel}-${slot.id}-hint-${slot.title_hint ?? ""}`}
                       className="w-full border border-ink/15 bg-white px-3 py-2 text-sm"
                       defaultValue={slot.title_hint ?? ""}
                       placeholder={`${slot.daypart ?? "slot"} title hint`}
@@ -1854,7 +1884,7 @@ function WeekSchedule() {
                     <label className="grid gap-1 text-xs text-ink/60">
                       Publish time — saves when you pick
                       <input
-                        key={`${slot.id}-${slot.publish_at ?? "empty"}`}
+                        key={`${channel}-${slot.id}-${slot.publish_at ?? "empty"}`}
                         type="datetime-local"
                         className="border border-ink/15 bg-white px-2 py-1.5 text-sm"
                         defaultValue={toLocalInputValue(slot.publish_at)}
@@ -1951,8 +1981,10 @@ function ReadyQueue() {
   const [busyId, setBusyId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    const forChannel = channel;
     const res = await fetch(`${API_BASE}/api/v1/publish/queue`);
     if (!res.ok) throw new Error(await res.text());
+    if (getChannelKey() !== forChannel) return;
     const body = (await res.json()) as {
       data: {
         buckets: Record<string, QueueSong[]>;
@@ -1966,6 +1998,10 @@ function ReadyQueue() {
   }, [channel]);
 
   useEffect(() => {
+    setBuckets({});
+    setCounts({});
+    setNote("");
+    setError(null);
     void load().catch((err) => setError(err instanceof Error ? err.message : "Load failed"));
   }, [load]);
 

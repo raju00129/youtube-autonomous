@@ -38,6 +38,8 @@ class SongProject(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     deity: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # te = Telugu channel | hi = Hindi channel
+    channel_key: Mapped[str] = mapped_column(String(8), default="te", index=True)
     language: Mapped[str] = mapped_column(String(40), default="te")
     music_genre: Mapped[str | None] = mapped_column(String(200), nullable=True)
     vocal_preference: Mapped[str | None] = mapped_column(String(40), nullable=True)
@@ -151,6 +153,8 @@ class ScheduleSlot(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
     week_start: Mapped[date] = mapped_column(Date, nullable=False)  # Monday of week
     slot_date: Mapped[date] = mapped_column(Date, nullable=False)
+    # te | hi — parallel week boards per YouTube channel
+    channel_key: Mapped[str] = mapped_column(String(8), default="te", index=True)
     # morning | evening — morning long video; evening Short
     daypart: Mapped[str] = mapped_column(String(20), default="morning", nullable=False)
     publish_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

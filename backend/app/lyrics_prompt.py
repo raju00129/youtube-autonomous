@@ -109,6 +109,7 @@ def build_lyrics_prompt(
 ) -> str:
     vocal_label = "female" if vocal == "f" else "male"
     seed = variation_seed or "fresh"
+    hindi = (language or "te").strip().lower().startswith("hi")
     regen = ""
     if regenerate or previous_lyrics:
         regen = f"""
@@ -132,6 +133,78 @@ AVOID ECHOING THESE RECENT CHANNEL SONGS (do not reuse titles, Pallavi lines, or
 """
 
     form = SONG_FORM_BLOCK.format(vocal_label=vocal_label)
+    if hindi:
+        # Soften Telugu-only lines in the shared form for Hindi channel
+        form = (
+            form.replace("deep Telugu", "deep Hindi")
+            .replace("traditional bhakti Telugu", "traditional bhakti Hindi")
+            .replace("Sung lyric lines MUST be Telugu script", "Sung lyric lines MUST be Hindi Devanagari script")
+            .replace("Ban modern slang and colloquial Telugu.", "Ban modern slang and colloquial Hindi.")
+            .replace("ముగింపు chorus", "समापन chorus")
+            .replace("రామా! రఘురామా!", "रामा! रघुरामा!")
+            .replace("జయ జయ", "जय जय")
+        )
+
+    if hindi:
+        return f"""You are a senior Hindi bhajan / kirtan lyricist for YouTube channel "Devotional Songs Hindi".
+Write ORIGINAL, temple-grade song lyrics in Hindi Devanagari for Suno custom mode — traditional North-Indian bhakti poetry, NOT everyday speech.
+Variation seed for uniqueness: {seed}
+
+LANGUAGE REGISTER (critical — failure if violated)
+- Sung lines MUST be Hindi Devanagari (हिन्दी). Never transliteration-only; never Telugu script for sung lines.
+- Write in CLASSICAL / literary BHAKTI Hindi — the sacred poetic tongue of traditional bhajans and kirtans.
+- Prefer elevated bhakti diction: नाम, गुण, लीला, करुणा, शरणागति, ज्योति, अमृत, चरण, हृदय, आनंद, दिव्य, पुण्य, etc. where natural.
+- FORBIDDEN: modern chat Hindi; film-song slang; English mix-ins in sung lines; flat kids-bhajan wording.
+- Pallavi = nama-rich, chantable sacred refrain. Charanams = poetic bhakti verses. Slokam may use elevated Sanskrit (original only).
+- Title: prefer Hindi Devanagari with traditional flavour when it fits.
+- Only Hindu deities/avataras (Shiva, Parvati, Sri Vishnu, Sri Rama, Krishna, Narasimha, Lakshmi, Saraswati, Durga, Hanuman, Ganesha, Subrahmanya, Venkateswara, Surya, Ayyappa, Annapurna…). Never Sai Baba / Shirdi.
+
+HINDI SINGABILITY & PRONUNCIATION (critical for AI vocals — failure if violated)
+- Write for a NATIVE Hindi bhajan singer: every syllable must be easy to pronounce clearly when sung.
+- Prefer short–medium sung lines (about 4–9 Hindi words). One clear idea per line.
+- Avoid tongue-twisters, overlong Sanskrit compounds that AI mangles, and mixed-script words.
+- Pallavi especially pronunciation-clean. Slokam chantable with short clear syllables.
+
+BRIEF
+- Language: Hindi (hi) — deep traditional bhakti Hindi Devanagari only for sung lines
+- Title hint: {title or "(invent a melodic traditional Hindi title)"}
+- Deity / theme: {deity or "general Hindu devotion"}
+- Topic / mood: {topic or "peaceful traditional temple devotion"}
+- Lead vocal: {vocal_label}
+- Music direction hint: {music_genre or "traditional Hindi classical bhajan"}
+- Write a beautiful timeless deity song. Do NOT force calendar festivals unless the topic explicitly asks.
+- Morning / daypart is ONLY a light mood hint — do NOT force a pratah-stuti song every time.
+{regen}
+{echo}
+
+{UNIQUENESS_BLOCK}
+
+{form}
+
+STYLE_PROMPT (English, for Suno — MUST match THESE lyrics)
+Decide musical energy from the lyrics, then write comma-separated tags that include this arc:
+- opening: a cappella {vocal_label} solo nama hook, no instruments at first
+- then full classical bhajan ensemble enters under Pallavi
+- brief deep Sanskrit chant break at Slokam
+- grand congregational chorus finale
+Also include:
+- traditional Hindi temple bhajan / kirtan only (no film, EDM, pop)
+- MUST include: authentic Hindi language vocals, native Hindi pronunciation, crystal clear Hindi diction, perfect Hindi enunciation, no accent issues, singable Hindi syllables
+- {vocal_label} native Hindi bhajan vocalist, classical ornamentation, steady shruti
+- tanpura; tabla/manjira intensity matching energy
+- instruments matching deity mood
+- EXPLICIT tempo e.g. "slow 68 BPM" OR "medium 96 BPM"
+- temple hall reverb; Pallavi chorus repeats; brief sloka chant break; grand nama finale
+- studio-quality vocal take, no mumbled words, lyrics fully intelligible in Hindi
+Max ~650 characters; no quotes inside.
+
+Also set:
+- "tempo": one of "slow" | "slow_medium" | "medium" | "medium_brisk"
+- "bpm_hint": integer
+- "energy": short phrase
+
+Respond with ONLY valid JSON (no markdown fences):
+{{"title":"...","style_prompt":"...","lyrics":"...","tempo":"...","bpm_hint":90,"energy":"..."}}"""
 
     return f"""You are a senior Telugu keerthana / bhajan lyricist for YouTube channel "Ragam Spiritual".
 Write ORIGINAL, temple-grade song lyrics in Telugu script for Suno custom mode — in the DEPTH of traditional Carnatic / bhakti poetry, NOT everyday speech.

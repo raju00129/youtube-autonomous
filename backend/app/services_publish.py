@@ -27,6 +27,10 @@ class PublishError(RuntimeError):
     pass
 
 
+def _song_channel_key(song: SongProject) -> str:
+    return (getattr(song, "channel_key", None) or "te").strip().lower() or "te"
+
+
 def _daypart_from_when(when: datetime) -> str:
     local = when.astimezone(IST) if when.tzinfo else when.replace(tzinfo=IST)
     return "morning" if local.hour < 12 else "evening"
@@ -236,6 +240,8 @@ def _upload_shorts_from_song(
                 tags=tags,
                 privacy_status=short_privacy,
                 publish_at=short_publish_at_iso,
+                channel_key=_song_channel_key(song),
+                language=getattr(song, "language", None),
             )
         except YouTubeUploadError as exc:
             results.append({"slot_index": short.slot_index, "error": str(exc)})
@@ -259,7 +265,11 @@ def _upload_shorts_from_song(
         pl = song.shorts_playlist_id or song.youtube_playlist_id
         if pl:
             try:
-                yt.add_to_playlist(playlist_id=pl, video_id=up["video_id"])
+                yt.add_to_playlist(
+                    playlist_id=pl,
+                    video_id=up["video_id"],
+                    channel_key=_song_channel_key(song),
+                )
             except YouTubeUploadError as exc:
                 logger.warning("shorts playlist add failed: %s", exc)
 
@@ -284,6 +294,8 @@ def _upload_shorts_from_song(
                     title=short_title,
                     description=pinned,
                     tags=tags,
+                    channel_key=_song_channel_key(song),
+                    language=getattr(song, "language", None),
                 )
                 for row in results:
                     if row.get("slot_index") == short.slot_index:
@@ -303,8 +315,11 @@ def publish_evening_short_from_morning(
     on_progress: ProgressCB = None,
 ) -> dict[str, Any]:
     """Evening: upload Short cut from this morning song (no new A/V)."""
-    if not yt.is_connected():
-        raise PublishError("YouTube not connected — open /api/v1/youtube/auth first")
+    ck = _song_channel_key(song)
+    if not yt.is_connected(ck):
+        raise PublishError(
+            f"YouTube not connected for '{ck}' — open /api/v1/youtube/auth?channel_key={ck}"
+        )
     if not song.youtube_video_id:
         raise PublishError("Morning long video must be live before evening Short")
     if not song.youtube_playlist_id:
@@ -356,12 +371,19 @@ def publish_song_to_youtube(
     on_progress: ProgressCB = None,
 ) -> dict[str, Any]:
     """Morning = long video only. Evening Short is cut from that morning song later."""
-    if not yt.is_connected():
-        raise PublishError("YouTube not connected — open /api/v1/youtube/auth first")
+    from app.channels import get_channel
+
+    ck = _song_channel_key(song)
+    if not yt.is_connected(ck):
+        raise PublishError(
+            f"YouTube not connected for '{ck}' — open /api/v1/youtube/auth?channel_key={ck}"
+        )
     if not song.youtube_playlist_id:
         raise PublishError("Select a YouTube playlist before publishing")
 
-    title = (song.youtube_title or song.title or "Ragam Spiritual Telugu").strip()[:100]
+    title = (
+        song.youtube_title or song.title or get_channel(ck).display_name
+    ).strip()[:100]
     description = (song.youtube_description or "").strip()
     tags = song.youtube_tags
 
@@ -424,6 +446,8 @@ def publish_song_to_youtube(
                 tags=tags,
                 privacy_status=privacy,
                 publish_at=publish_at_iso,
+                channel_key=ck,
+                language=getattr(song, "language", None),
             )
         except YouTubeUploadError as exc:
             raise PublishError(str(exc)) from exc
@@ -437,7 +461,11 @@ def publish_song_to_youtube(
     if song.thumbnail_path and Path(song.thumbnail_path).exists() and video_id:
         report(on_progress, 40, "Setting YouTube thumbnail…")
         try:
-            yt.set_thumbnail(video_id=video_id, image_path=song.thumbnail_path)
+            yt.set_thumbnail(
+                video_id=video_id,
+                image_path=song.thumbnail_path,
+                channel_key=ck,
+            )
             results["thumbnail"] = "set"
         except YouTubeUploadError as exc:
             logger.warning("thumbnail set failed: %s", exc)
@@ -445,7 +473,11 @@ def publish_song_to_youtube(
 
     report(on_progress, 48, "Adding long-form to playlist…")
     try:
-        yt.add_to_playlist(playlist_id=song.youtube_playlist_id, video_id=video_id)
+        yt.add_to_playlist(
+            playlist_id=song.youtube_playlist_id,
+            video_id=video_id,
+            channel_key=ck,
+        )
         results["playlist"] = song.youtube_playlist_id
     except YouTubeUploadError as exc:
         logger.warning("playlist add failed: %s", exc)

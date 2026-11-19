@@ -263,10 +263,22 @@ def deity_profile(name: str) -> dict[str, str]:
     }))
 
 
+def _localize_genre(genre: str, language: str) -> str:
+    lang = (language or "te").strip().lower()
+    if lang.startswith("hi"):
+        return (
+            genre.replace("traditional Telugu", "traditional Hindi")
+            .replace("Telugu Carnatic", "Hindi classical bhajan")
+            .replace("Telugu", "Hindi")
+        )
+    return genre
+
+
 def suggest_for_date(
     when: date | datetime | None = None,
     *,
     daypart: str = "morning",
+    language: str = "te",
 ) -> dict[str, Any]:
     d = when.date() if isinstance(when, datetime) else (when or date.today())
     part = daypart if daypart in DAYPART_FLAVOR else "morning"
@@ -275,6 +287,7 @@ def suggest_for_date(
     deity = resolve_deity(d, part)
     day = deity_profile(deity)
     vocal = day.get("vocal_preference", "m")
+    lang = (language or "te").strip().lower()
     # Rotate daypart colour + deity angle so lyrics don't clone yesterday
     if part == "morning":
         prefix = _MORNING_PREFIXES[(d.toordinal() + weekday) % len(_MORNING_PREFIXES)]
@@ -298,6 +311,7 @@ def suggest_for_date(
         "serene South Indian temple sanctum, soft oil-lamp glow, "
         "fresh flowers, peaceful murti devotion",
     )
+    script_label = "Hindi (Devanagari)" if lang.startswith("hi") else "Telugu"
     return {
         "date": d.isoformat(),
         "weekday": d.strftime("%A"),
@@ -308,12 +322,13 @@ def suggest_for_date(
         "publish_minute": flavor["default_minute"],
         "deity": deity,
         "topic": topic,
-        "music_genre": day["music_genre"],
+        "music_genre": _localize_genre(day["music_genre"], lang),
         "energy_hint": day.get("energy_hint"),
         "vocal_preference": vocal,
         "month_mood": "peaceful temple devotion",
         "festive_hint": "",
         "visual_style": visual,
+        "language": lang,
         "pantheon": sorted(HINDU_DEITIES.keys()),
         "shorts_plan": (
             "Evening: 1 Short cut from that day’s morning long video (same A/V, no new song)."
@@ -322,17 +337,17 @@ def suggest_for_date(
         ),
         "thumbnail_notes": (
             f"Feature {deity} prominently; serene temple look: {visual}; "
-            "include channel logo + Telugu song title."
+            f"include channel logo + {script_label} song title."
         ),
     }
 
 
-def week_suggestions(start: date) -> list[dict[str, Any]]:
+def week_suggestions(start: date, *, language: str = "te") -> list[dict[str, Any]]:
     from datetime import timedelta
 
     out: list[dict[str, Any]] = []
     for i in range(7):
         day = start + timedelta(days=i)
-        out.append(suggest_for_date(day, daypart="morning"))
-        out.append(suggest_for_date(day, daypart="evening"))
+        out.append(suggest_for_date(day, daypart="morning", language=language))
+        out.append(suggest_for_date(day, daypart="evening", language=language))
     return out

@@ -55,11 +55,18 @@ def generate(
     """Submit ACE-Step generation. Returns {task_id, raw}."""
     settings = get_settings()
     # Embed title into tags for player metadata; ACE-Step primary controls are tags + lyrics.
+    lower = (style or "").lower()
+    if instrumental:
+        vocal_tag = "instrumental"
+    elif "hindi" in lower:
+        vocal_tag = "Hindi vocals"
+    else:
+        vocal_tag = "Telugu vocals"
     tags = ", ".join(
         part
         for part in [
             style.strip(),
-            "Telugu vocals" if not instrumental else "instrumental",
+            vocal_tag,
             f"title:{title[:60]}" if title else "",
         ]
         if part

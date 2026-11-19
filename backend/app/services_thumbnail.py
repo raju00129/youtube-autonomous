@@ -36,22 +36,35 @@ def _latest_lyrics(song: SongProject) -> str | None:
 
 
 def overlay_title_from_song(song: SongProject, lyrics: str | None) -> str:
-    """Telugu title for thumb — prefer latest Pallavi, then song.title (strip SEO English)."""
-    from app.content_templates import _telugu_hook_title
+    """Indic title for thumb — prefer latest Pallavi, then song.title (strip SEO English)."""
+    from app.content_templates import _hook_title
 
+    lang = getattr(song, "language", None) or "te"
     candidates = [
-        extract_pallavi_line(lyrics),
-        _telugu_hook_title(song.title, max_chars=42),
-        _telugu_hook_title(getattr(song, "youtube_title", None), max_chars=42),
+        extract_pallavi_line(lyrics, language=lang),
+        _hook_title(song.title, max_chars=42, language=lang),
+        _hook_title(getattr(song, "youtube_title", None), max_chars=42, language=lang),
     ]
     for raw in candidates:
-        clean = sanitize_overlay_text((raw or "").strip(), max_len=80)
-        if clean and clean.lower() not in {"ragam spiritual", "untitled", "untitled devotional"}:
-            return thumbnail_hook_title(clean, max_words=3, max_chars=22)
-    return thumbnail_hook_title(song.title or "Ragam Spiritual", max_words=3, max_chars=22)
+        clean = sanitize_overlay_text((raw or "").strip(), max_len=80, language=lang)
+        if clean and clean.lower() not in {
+            "ragam spiritual",
+            "devotional songs hindi",
+            "untitled",
+            "untitled devotional",
+        }:
+            return thumbnail_hook_title(clean, max_words=3, max_chars=22, language=lang)
+    fallback = (
+        "Devotional Songs Hindi" if lang.startswith("hi") else "Ragam Spiritual"
+    )
+    return thumbnail_hook_title(
+        song.title or fallback, max_words=3, max_chars=22, language=lang
+    )
 
 
-def _telugu_subtitle(lyrics: str | None, title: str | None) -> str:
+def _lyric_subtitle(
+    lyrics: str | None, title: str | None, *, language: str | None = "te"
+) -> str:
     if not lyrics:
         return ""
     m = re.search(
@@ -62,7 +75,7 @@ def _telugu_subtitle(lyrics: str | None, title: str | None) -> str:
     if not m:
         return ""
     plines = [
-        sanitize_overlay_text(ln.strip(), max_len=40)
+        sanitize_overlay_text(ln.strip(), max_len=40, language=language)
         for ln in m.group(1).splitlines()
         if ln.strip() and not ln.strip().startswith("[")
     ]
@@ -170,8 +183,12 @@ def ensure_song_thumbnail(
             bg_path = song.deity_image_path
             engine = "user_upload"
 
+    lang = getattr(song, "language", None) or "te"
+    default_title = (
+        "Devotional Songs Hindi" if lang.startswith("hi") else "Ragam Spiritual"
+    )
     compose_thumbnail(
-        title=title or "Ragam Spiritual",
+        title=title or default_title,
         deity=song.deity,
         logo_path=logo,
         deity_image_path=bg_path,
@@ -179,8 +196,9 @@ def ensure_song_thumbnail(
         lyrics=lyrics,
         style_prompt=song.style_prompt,
         daypart=daypart,
-        subtitle=_telugu_subtitle(lyrics, title) or None,
+        subtitle=_lyric_subtitle(lyrics, title, language=lang) or None,
         prefer_photo=bool(bg_path),
+        language=lang,
     )
     song.thumbnail_path = str(out)
     return out, engine

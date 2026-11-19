@@ -86,5 +86,5 @@ def generate_lyrics(
         for bit in extras:
             if bit.lower() not in lower:
                 style = f"{style}, {bit}"
-    data["style_prompt"] = enrich_style_prompt(style, vocal=vocal)[:1000]
+    data["style_prompt"] = enrich_style_prompt(style, vocal=vocal, language=language)[:1000]
     return data

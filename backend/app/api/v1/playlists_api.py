@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.channels import ChannelKey, channel_key_dependency
 from app.db import get_db
 from app.models import SongProject
 from app.playlists import apply_playlists_to_song, pick_playlist, suggest_playlist_names
@@ -17,15 +18,21 @@ router = APIRouter(prefix="/playlists", tags=["playlists"])
 
 
 @router.get("")
-def list_channel_playlists() -> dict:
-    if not yt.is_connected():
-        raise HTTPException(status_code=503, detail="YouTube not connected — connect OAuth first")
+def list_channel_playlists(
+    channel_key: ChannelKey = Depends(channel_key_dependency),
+) -> dict:
+    if not yt.is_connected(channel_key):
+        raise HTTPException(
+            status_code=503,
+            detail=f"YouTube not connected for '{channel_key}' — connect OAuth first",
+        )
     try:
-        items = yt.list_playlists()
+        items = yt.list_playlists(channel_key=channel_key)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {
         "data": {
+            "channel_key": channel_key,
             "playlists": items,
             "count": len(items),
             "hint": (
@@ -37,12 +44,16 @@ def list_channel_playlists() -> dict:
 
 
 @router.get("/suggest")
-def suggest(deity: str | None = None, daypart: str | None = "morning") -> dict:
+def suggest(
+    deity: str | None = None,
+    daypart: str | None = "morning",
+    channel_key: ChannelKey = Depends(channel_key_dependency),
+) -> dict:
     channel: list[dict[str, str]] = []
     youtube_error: str | None = None
-    if yt.is_connected():
+    if yt.is_connected(channel_key):
         try:
-            channel = yt.list_playlists()
+            channel = yt.list_playlists(channel_key=channel_key)
         except Exception as exc:  # noqa: BLE001
             youtube_error = str(exc)
             channel = []
@@ -56,6 +67,7 @@ def suggest(deity: str | None = None, daypart: str | None = "morning") -> dict:
     }
     return {
         "data": {
+            "channel_key": channel_key,
             "longform": longform,
             "shorts": shorts,
             "preferred_titles": suggest_playlist_names(deity=deity, daypart=daypart),
@@ -85,13 +97,14 @@ def assign_playlist(
     song = db.get(SongProject, song_id)
     if not song:
         raise HTTPException(status_code=404, detail="Song not found")
+    ck = getattr(song, "channel_key", None) or "te"
 
     # Manual select — always wins when playlist_id is provided
     if body.playlist_id and not body.auto:
         title = body.playlist_title
-        if not title and yt.is_connected():
+        if not title and yt.is_connected(ck):
             try:
-                for pl in yt.list_playlists():
+                for pl in yt.list_playlists(channel_key=ck):
                     if pl.get("id") == body.playlist_id:
                         title = pl.get("title")
                         break
@@ -126,9 +139,9 @@ def assign_playlist(
 
     channel: list[dict[str, str]] = []
     youtube_error: str | None = None
-    if yt.is_connected():
+    if yt.is_connected(ck):
         try:
-            channel = yt.list_playlists()
+            channel = yt.list_playlists(channel_key=ck)
         except Exception as exc:  # noqa: BLE001
             youtube_error = str(exc)
             channel = []

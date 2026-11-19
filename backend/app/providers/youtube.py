@@ -24,15 +24,15 @@ YOUTUBE_SCOPES = [
 ]
 
 
-def _token_path() -> Path:
-    settings = get_settings()
-    path = Path(settings.media_root) / "cache" / "youtube_oauth_token.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return path
+def _token_path(channel_key: str | None = None) -> Path:
+    from app.channels import migrate_legacy_token, token_path_for
+
+    migrate_legacy_token()
+    return token_path_for(channel_key)
 
 
-def _read_token_raw() -> dict[str, Any] | None:
-    path = _token_path()
+def _read_token_raw(channel_key: str | None = None) -> dict[str, Any] | None:
+    path = _token_path(channel_key)
     if not path.exists():
         return None
     try:
@@ -41,8 +41,8 @@ def _read_token_raw() -> dict[str, Any] | None:
         return None
 
 
-def _write_token_raw(raw: dict[str, Any]) -> None:
-    path = _token_path()
+def _write_token_raw(raw: dict[str, Any], channel_key: str | None = None) -> None:
+    path = _token_path(channel_key)
     path.write_text(json.dumps(raw, indent=2), encoding="utf-8")
 
 
@@ -70,9 +70,14 @@ def _expiry_from_raw(raw: dict[str, Any]) -> datetime | None:
     return None
 
 
-def _persist_credentials(creds: Credentials, previous: dict[str, Any] | None = None) -> dict[str, Any]:
+def _persist_credentials(
+    creds: Credentials,
+    previous: dict[str, Any] | None = None,
+    *,
+    channel_key: str | None = None,
+) -> dict[str, Any]:
     """Write access + refresh tokens with absolute expiry so we can refresh later."""
-    prev = previous or _read_token_raw() or {}
+    prev = previous or _read_token_raw(channel_key) or {}
     refresh = creds.refresh_token or prev.get("refresh_token")
     expiry = creds.expiry
     if expiry is not None and expiry.tzinfo is None:
@@ -84,16 +89,17 @@ def _persist_credentials(creds: Credentials, previous: dict[str, Any] | None = N
         "refresh_token": refresh,
         "scope": " ".join(creds.scopes or YOUTUBE_SCOPES),
         "saved_at": datetime.now(timezone.utc).isoformat(),
+        "channel_key": channel_key or "te",
     }
     if expiry is not None:
         raw["expiry"] = expiry.astimezone(timezone.utc).isoformat()
         remaining = int((expiry.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds())
         raw["expires_in"] = max(remaining, 0)
-    _write_token_raw(raw)
+    _write_token_raw(raw, channel_key)
     return raw
 
 
-def build_auth_url(state: str = "ragam") -> str:
+def build_auth_url(state: str = "te") -> str:
     settings = get_settings()
     params = {
         "client_id": settings.google_client_id,
@@ -101,16 +107,19 @@ def build_auth_url(state: str = "ragam") -> str:
         "response_type": "code",
         "scope": " ".join(YOUTUBE_SCOPES),
         "access_type": "offline",
-        "prompt": "consent",
+        "prompt": "consent select_account",
         "include_granted_scopes": "true",
         "state": state,
     }
     return f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"
 
 
-def exchange_code(code: str) -> dict[str, Any]:
+def exchange_code(code: str, *, channel_key: str | None = None) -> dict[str, Any]:
+    from app.channels import normalize_channel_key
+
+    ck = normalize_channel_key(channel_key)
     settings = get_settings()
-    previous = _read_token_raw() or {}
+    previous = _read_token_raw(ck) or {}
     with httpx.Client(timeout=30.0) as client:
         response = client.post(
             "https://oauth2.googleapis.com/token",
@@ -133,17 +142,23 @@ def exchange_code(code: str) -> dict[str, Any]:
     expires_in = int(tokens.get("expires_in") or 3600)
     tokens["saved_at"] = now.isoformat()
     tokens["expiry"] = (now + timedelta(seconds=expires_in)).isoformat()
-    _write_token_raw(tokens)
+    tokens["channel_key"] = ck
+    _write_token_raw(tokens, ck)
     return tokens
 
 
-def load_credentials(*, force_refresh: bool = False) -> Credentials | None:
-    path = _token_path()
+def load_credentials(
+    *, force_refresh: bool = False, channel_key: str | None = None
+) -> Credentials | None:
+    from app.channels import normalize_channel_key
+
+    ck = normalize_channel_key(channel_key)
+    path = _token_path(ck)
     if not path.exists():
         return None
 
     settings = get_settings()
-    raw = _read_token_raw() or {}
+    raw = _read_token_raw(ck) or {}
     if not raw.get("refresh_token") and not raw.get("access_token"):
         return None
 
@@ -165,25 +180,34 @@ def load_credentials(*, force_refresh: bool = False) -> Credentials | None:
     if needs_refresh:
         try:
             creds.refresh(Request())
-            _persist_credentials(creds, previous=raw)
+            _persist_credentials(creds, previous=raw, channel_key=ck)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("YouTube token refresh failed: %s", exc)
+            logger.warning("YouTube token refresh failed (%s): %s", ck, exc)
             if force_refresh or not creds.token:
                 raise RuntimeError(
-                    "YouTube session expired — reconnect via Connect YouTube"
+                    f"YouTube session expired for channel '{ck}' — reconnect via Connect YouTube"
                 ) from exc
     return creds
 
 
-def is_connected() -> bool:
-    raw = _read_token_raw()
+def is_connected(channel_key: str | None = None) -> bool:
+    from app.channels import normalize_channel_key
+
+    ck = normalize_channel_key(channel_key)
+    raw = _read_token_raw(ck)
     return bool(raw and (raw.get("refresh_token") or raw.get("access_token")))
 
 
-def fetch_mine_channel() -> dict[str, Any]:
-    creds = load_credentials()
+def fetch_mine_channel(channel_key: str | None = None) -> dict[str, Any]:
+    from app.channels import get_channel, normalize_channel_key
+
+    ck = normalize_channel_key(channel_key)
+    profile = get_channel(ck)
+    creds = load_credentials(channel_key=ck)
     if creds is None or not creds.token:
-        raise RuntimeError("YouTube not connected. Visit /api/v1/youtube/auth first.")
+        raise RuntimeError(
+            f"YouTube not connected for '{ck}'. Visit /api/v1/youtube/auth?channel_key={ck}"
+        )
 
     def _get(token: str) -> httpx.Response:
         with httpx.Client(timeout=30.0) as client:
@@ -195,9 +219,11 @@ def fetch_mine_channel() -> dict[str, Any]:
 
     response = _get(creds.token)
     if response.status_code == 401 and creds.refresh_token:
-        creds = load_credentials(force_refresh=True)
+        creds = load_credentials(force_refresh=True, channel_key=ck)
         if creds is None or not creds.token:
-            raise RuntimeError("YouTube not connected. Visit /api/v1/youtube/auth first.")
+            raise RuntimeError(
+                f"YouTube not connected for '{ck}'. Visit /api/v1/youtube/auth?channel_key={ck}"
+            )
         response = _get(creds.token)
     response.raise_for_status()
     data = response.json()
@@ -209,7 +235,7 @@ def fetch_mine_channel() -> dict[str, Any]:
     channel = items[0]
     snippet = channel.get("snippet") or {}
     stats = channel.get("statistics") or {}
-    settings = get_settings()
+    configured_id = profile.youtube_channel_id
     return {
         "id": channel.get("id"),
         "title": snippet.get("title"),
@@ -219,41 +245,61 @@ def fetch_mine_channel() -> dict[str, Any]:
         "subscriber_count": stats.get("subscriberCount"),
         "video_count": stats.get("videoCount"),
         "view_count": stats.get("viewCount"),
-        "configured_channel_id": settings.youtube_channel_id,
-        "configured_handle": settings.youtube_channel_handle,
-        "matches_configured": channel.get("id") == settings.youtube_channel_id
-        if settings.youtube_channel_id
-        else None,
+        "channel_key": ck,
+        "configured_channel_id": configured_id,
+        "configured_handle": profile.youtube_channel_handle,
+        "configured_display_name": profile.display_name,
+        "matches_configured": channel.get("id") == configured_id if configured_id else None,
         "connected": True,
     }
 
 
-def connection_status() -> dict[str, Any]:
+def connection_status(channel_key: str | None = None) -> dict[str, Any]:
+    from app.channels import get_channel, list_channels, normalize_channel_key
+
     settings = get_settings()
-    connected = is_connected()
+    ck = normalize_channel_key(channel_key)
+    profile = get_channel(ck)
+    connected = is_connected(ck)
+    channels_status = []
+    for row in list_channels():
+        key = row["key"]
+        entry = {**row, "connected": is_connected(key), "auth_url": build_auth_url(state=key)}
+        channels_status.append(entry)
     payload: dict[str, Any] = {
         "oauth_client_configured": bool(settings.google_client_id and settings.google_client_secret),
+        "channel_key": ck,
         "connected": connected,
         "configured_channel": {
-            "id": settings.youtube_channel_id,
-            "handle": settings.youtube_channel_handle,
-            "url": settings.youtube_channel_url,
+            "id": profile.youtube_channel_id,
+            "handle": profile.youtube_channel_handle,
+            "url": profile.youtube_channel_url,
+            "display_name": profile.display_name,
+            "language": profile.language,
         },
-        "auth_url": build_auth_url() if settings.google_client_id else None,
+        "auth_url": build_auth_url(state=ck) if settings.google_client_id else None,
+        "channels": channels_status,
     }
     if connected:
         try:
-            payload["channel"] = fetch_mine_channel()
+            payload["channel"] = fetch_mine_channel(ck)
         except Exception as exc:  # noqa: BLE001 — surface status without crashing
             payload["channel_error"] = str(exc)
     return payload
 
 
-def list_playlists(max_results: int = 50) -> list[dict[str, str]]:
+def list_playlists(
+    max_results: int = 50, *, channel_key: str | None = None
+) -> list[dict[str, str]]:
     """List playlists for the authorized channel."""
-    creds = load_credentials()
+    from app.channels import normalize_channel_key
+
+    ck = normalize_channel_key(channel_key)
+    creds = load_credentials(channel_key=ck)
     if creds is None or not creds.token:
-        raise RuntimeError("YouTube not connected. Visit /api/v1/youtube/auth first.")
+        raise RuntimeError(
+            f"YouTube not connected for '{ck}'. Visit /api/v1/youtube/auth?channel_key={ck}"
+        )
 
     items: list[dict[str, str]] = []
     page_token: str | None = None
@@ -273,9 +319,11 @@ def list_playlists(max_results: int = 50) -> list[dict[str, str]]:
                 headers={"Authorization": f"Bearer {creds.token}"},
             )
             if response.status_code == 401 and creds.refresh_token and not refreshed:
-                creds = load_credentials(force_refresh=True)
+                creds = load_credentials(force_refresh=True, channel_key=ck)
                 if creds is None or not creds.token:
-                    raise RuntimeError("YouTube not connected. Visit /api/v1/youtube/auth first.")
+                    raise RuntimeError(
+                        f"YouTube not connected for '{ck}'. Visit /api/v1/youtube/auth?channel_key={ck}"
+                    )
                 refreshed = True
                 continue
             response.raise_for_status()
@@ -301,12 +349,16 @@ class YouTubeUploadError(RuntimeError):
     pass
 
 
-def _yt_service():
+def _yt_service(*, channel_key: str | None = None):
     from googleapiclient.discovery import build
+    from app.channels import normalize_channel_key
 
-    creds = load_credentials()
+    ck = normalize_channel_key(channel_key)
+    creds = load_credentials(channel_key=ck)
     if creds is None or not creds.token:
-        raise YouTubeUploadError("YouTube not connected. Visit /api/v1/youtube/auth first.")
+        raise YouTubeUploadError(
+            f"YouTube not connected for '{ck}'. Visit /api/v1/youtube/auth?channel_key={ck}"
+        )
     return build("youtube", "v3", credentials=creds, cache_discovery=False)
 
 
@@ -323,21 +375,35 @@ def _parse_tags(raw: str | None) -> list[str]:
     return tags
 
 
-def _language_fields() -> dict[str, str]:
+def _language_fields(*, channel_key: str | None = None, language: str | None = None) -> dict[str, str]:
     """Video language + spoken-audio language; auto captions follow the audio language."""
-    lang = (getattr(get_settings(), "youtube_language", "te") or "te").strip()
+    from app.channels import get_channel, normalize_channel_key
+
+    if language:
+        lang = language.strip()
+    else:
+        ck = normalize_channel_key(channel_key)
+        lang = get_channel(ck).youtube_language
     return {"defaultLanguage": lang, "defaultAudioLanguage": lang}
 
 
-def set_video_language(*, video_id: str, snippet: dict[str, Any]) -> bool:
+def _fallback_title(channel_key: str | None = None) -> str:
+    from app.channels import get_channel, normalize_channel_key
+
+    return get_channel(normalize_channel_key(channel_key)).display_name
+
+
+def set_video_language(
+    *, video_id: str, snippet: dict[str, Any], channel_key: str | None = None
+) -> bool:
     """Re-save an existing video's snippet with the channel language. Returns True if changed."""
     from googleapiclient.errors import HttpError
 
-    wanted = _language_fields()
+    wanted = _language_fields(channel_key=channel_key)
     if all(snippet.get(k) == v for k, v in wanted.items()):
         return False
     body_snippet: dict[str, Any] = {
-        "title": snippet.get("title") or "Ragam Spiritual Telugu",
+        "title": snippet.get("title") or _fallback_title(channel_key),
         "description": snippet.get("description") or "",
         "categoryId": snippet.get("categoryId") or "10",
         **wanted,
@@ -345,7 +411,7 @@ def set_video_language(*, video_id: str, snippet: dict[str, Any]) -> bool:
     if snippet.get("tags"):
         body_snippet["tags"] = snippet["tags"]
     try:
-        _yt_service().videos().update(
+        _yt_service(channel_key=channel_key).videos().update(
             part="snippet", body={"id": video_id, "snippet": body_snippet}
         ).execute()
     except HttpError as exc:
@@ -364,6 +430,8 @@ def upload_video(
     publish_at: str | None = None,
     made_for_kids: bool = False,
     contains_synthetic_media: bool | None = None,
+    channel_key: str | None = None,
+    language: str | None = None,
 ) -> dict[str, Any]:
     """Resumable upload. Returns {video_id, url, raw}."""
     from googleapiclient.errors import HttpError
@@ -394,16 +462,16 @@ def upload_video(
 
     body = {
         "snippet": {
-            "title": (title or "Ragam Spiritual Telugu")[:100],
+            "title": (title or _fallback_title(channel_key))[:100],
             "description": (description or "")[:4900],
             "tags": tag_list,
             "categoryId": category_id,
-            **_language_fields(),
+            **_language_fields(channel_key=channel_key, language=language),
         },
         "status": status,
     }
 
-    youtube = _yt_service()
+    youtube = _yt_service(channel_key=channel_key)
     media = MediaFileUpload(
         str(path),
         mimetype="video/mp4",
@@ -428,7 +496,9 @@ def upload_video(
     }
 
 
-def set_thumbnail(*, video_id: str, image_path: str | Path) -> dict[str, Any]:
+def set_thumbnail(
+    *, video_id: str, image_path: str | Path, channel_key: str | None = None
+) -> dict[str, Any]:
     from googleapiclient.errors import HttpError
     from googleapiclient.http import MediaFileUpload
 
@@ -437,7 +507,7 @@ def set_thumbnail(*, video_id: str, image_path: str | Path) -> dict[str, Any]:
         raise YouTubeUploadError(f"Thumbnail missing: {path}")
     suffix = path.suffix.lower()
     mime = "image/png" if suffix == ".png" else "image/jpeg"
-    youtube = _yt_service()
+    youtube = _yt_service(channel_key=channel_key)
     try:
         return (
             youtube.thumbnails()
@@ -448,12 +518,14 @@ def set_thumbnail(*, video_id: str, image_path: str | Path) -> dict[str, Any]:
         raise YouTubeUploadError(f"Thumbnail set failed: {exc}") from exc
 
 
-def add_to_playlist(*, playlist_id: str, video_id: str) -> dict[str, Any]:
+def add_to_playlist(
+    *, playlist_id: str, video_id: str, channel_key: str | None = None
+) -> dict[str, Any]:
     from googleapiclient.errors import HttpError
 
     if not playlist_id or not video_id:
         raise YouTubeUploadError("playlist_id and video_id required")
-    youtube = _yt_service()
+    youtube = _yt_service(channel_key=channel_key)
     try:
         return (
             youtube.playlistItems()
@@ -486,6 +558,8 @@ def update_video_snippet(
     description: str,
     tags: str | list[str] | None = None,
     category_id: str = "10",
+    channel_key: str | None = None,
+    language: str | None = None,
 ) -> dict[str, Any]:
     """Update title/description/tags (used to pin Short → long-form link)."""
     from googleapiclient.errors import HttpError
@@ -493,17 +567,17 @@ def update_video_snippet(
     if not video_id:
         raise YouTubeUploadError("video_id required")
     tag_list = _parse_tags(tags) if isinstance(tags, str) or tags is None else list(tags)
-    youtube = _yt_service()
+    youtube = _yt_service(channel_key=channel_key)
     body = {
         "id": video_id,
         "snippet": {
-            "title": (title or "Ragam Spiritual Telugu")[:100],
+            "title": (title or _fallback_title(channel_key))[:100],
             "description": (description or "")[:4900],
             "tags": tag_list,
             "categoryId": category_id,
             # snippet updates replace the whole snippet; omitting these resets
             # the audio language (Shorts fell back to en-US → wrong auto captions)
-            **_language_fields(),
+            **_language_fields(channel_key=channel_key, language=language),
         },
     }
     try:
@@ -512,7 +586,9 @@ def update_video_snippet(
         raise YouTubeUploadError(f"Video metadata update failed: {exc}") from exc
 
 
-def set_synthetic_media_flag(*, video_id: str, value: bool = True) -> dict[str, Any]:
+def set_synthetic_media_flag(
+    *, video_id: str, value: bool = True, channel_key: str | None = None
+) -> dict[str, Any]:
     """Set the A/S disclosure on an existing video, keeping its other status fields.
 
     videos.update(part=status) replaces the whole status object, so the current
@@ -522,7 +598,7 @@ def set_synthetic_media_flag(*, video_id: str, value: bool = True) -> dict[str, 
 
     if not video_id:
         raise YouTubeUploadError("video_id required")
-    youtube = _yt_service()
+    youtube = _yt_service(channel_key=channel_key)
     try:
         items = youtube.videos().list(part="status", id=video_id).execute().get("items") or []
         if not items:

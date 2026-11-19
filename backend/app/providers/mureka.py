@@ -55,13 +55,16 @@ def generate(
 ) -> dict[str, Any]:
     """Submit lyrics-to-song. Returns {task_id, raw}."""
     settings = get_settings()
-    # Prefer desc (comma style tags). Include Telugu hint in style for our use case.
+    # Prefer desc (comma style tags). Keep language vocal hint if missing.
     style_bits = [style.strip()]
     if vocal_gender == "f":
         style_bits.append("female vocal")
     elif vocal_gender == "m":
         style_bits.append("male vocal")
-    if "telugu" not in style.lower():
+    lower = style.lower()
+    if "hindi" in lower and "hindi language" not in lower:
+        style_bits.append("Hindi language vocals")
+    elif "telugu" not in lower and "hindi" not in lower:
         style_bits.append("Telugu language vocals")
 
     payload: dict[str, Any] = {

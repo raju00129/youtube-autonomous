@@ -111,8 +111,9 @@ def generate_lyrics(
             "parts": [
                 {
                     "text": (
-                        "You write original Telugu temple keerthana lyrics as strict JSON. "
-                        "Deep traditional bhakti diction, crystal-clear Telugu singability, "
+                        "You write original temple bhajan/keerthana lyrics as strict JSON. "
+                        "Match the requested language script (Telugu or Hindi Devanagari). "
+                        "Deep traditional bhakti diction, crystal-clear singability, "
                         "native pronunciation-friendly lines only."
                     )
                 }
@@ -181,7 +182,7 @@ def generate_lyrics(
         for bit in extras:
             if bit.lower() not in lower:
                 style = f"{style}, {bit}"
-    data["style_prompt"] = enrich_style_prompt(style, vocal=vocal)[:1000]
+    data["style_prompt"] = enrich_style_prompt(style, vocal=vocal, language=language)[:1000]
     data["provider"] = "gemini"
     data["model"] = used_model
     return data

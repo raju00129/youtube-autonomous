@@ -46,6 +46,9 @@ def ensure_media_dirs() -> None:
     ):
         (root / sub).mkdir(parents=True, exist_ok=True)
     ensure_schema()
+    from app.channels import migrate_legacy_token
+
+    migrate_legacy_token()
 
 
 @app.get("/health")

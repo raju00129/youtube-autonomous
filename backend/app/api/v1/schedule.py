@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.calendar_rules import DAYPART_FLAVOR, suggest_for_date, week_suggestions
+from app.channels import ChannelKey, channel_key_dependency, default_language, get_channel
 from app.content_templates import fill_shorts_pair, fill_youtube_longform
 from app.db import get_db
 from app.models import ScheduleSlot, ShortProject, SongProject
@@ -48,11 +49,14 @@ def _format_for_daypart(daypart: str) -> str:
     return "longform" if targets["longform"] else "short"
 
 
-def _morning_slot_for_day(db: Session, slot_date: date) -> ScheduleSlot | None:
+def _morning_slot_for_day(
+    db: Session, slot_date: date, *, channel_key: str = "te"
+) -> ScheduleSlot | None:
     return db.scalar(
         select(ScheduleSlot)
         .where(ScheduleSlot.slot_date == slot_date)
         .where(ScheduleSlot.daypart == "morning")
+        .where(ScheduleSlot.channel_key == channel_key)
         .options(selectinload(ScheduleSlot.song).selectinload(SongProject.shorts))
     )
 
@@ -77,11 +81,14 @@ def link_evening_slot_to_morning(
         evening.notes = f"{notes}\n{note}".strip() if notes else note
 
 
-def auto_link_evening_slots_for_week(db: Session, monday: date) -> int:
+def auto_link_evening_slots_for_week(
+    db: Session, monday: date, *, channel_key: str = "te"
+) -> int:
     """Attach evening slots to that day's morning song (no manual click)."""
     slots = db.scalars(
         select(ScheduleSlot)
         .where(ScheduleSlot.week_start == monday)
+        .where(ScheduleSlot.channel_key == channel_key)
         .options(selectinload(ScheduleSlot.song).selectinload(SongProject.shorts))
     ).all()
     by_day: dict[date, dict[str, ScheduleSlot]] = {}
@@ -170,6 +177,7 @@ def _slot_payload(slot: ScheduleSlot, *, morning_song: SongProject | None = None
         "auto_topic": slot.auto_topic,
         "auto_mood": slot.auto_mood,
         "notes": slot.notes,
+        "channel_key": getattr(slot, "channel_key", None) or "te",
         "uploads": 1,
         "shorts_per_song": 1 if fmt == "short" else 0,
         "needs_create": fmt == "longform" and not slot.song_id and not published,
@@ -199,17 +207,30 @@ class MaterializeRequest(BaseModel):
 
 
 @router.get("/calendar/suggest")
-def calendar_suggest(on: date | None = None, daypart: str = "morning") -> dict:
-    return {"data": suggest_for_date(on, daypart=daypart)}
+def calendar_suggest(
+    on: date | None = None,
+    daypart: str = "morning",
+    channel_key: ChannelKey = Depends(channel_key_dependency),
+) -> dict:
+    return {
+        "data": suggest_for_date(
+            on, daypart=daypart, language=default_language(channel_key)
+        )
+    }
 
 
 @router.get("/weeks/{week_start}")
-def get_week(week_start: date, db: Session = Depends(get_db)) -> dict:
+def get_week(
+    week_start: date,
+    db: Session = Depends(get_db),
+    channel_key: ChannelKey = Depends(channel_key_dependency),
+) -> dict:
     monday = _monday_of(week_start)
-    auto_link_evening_slots_for_week(db, monday)
+    auto_link_evening_slots_for_week(db, monday, channel_key=channel_key)
     slots = db.scalars(
         select(ScheduleSlot)
         .where(ScheduleSlot.week_start == monday)
+        .where(ScheduleSlot.channel_key == channel_key)
         .options(
             selectinload(ScheduleSlot.song).selectinload(SongProject.shorts),
         )
@@ -236,6 +257,12 @@ def get_week(week_start: date, db: Session = Depends(get_db)) -> dict:
     return {
         "data": {
             "week_start": monday.isoformat(),
+            "channel_key": channel_key,
+            "channel": {
+                "key": channel_key,
+                "display_name": get_channel(channel_key).display_name,
+                "language": default_language(channel_key),
+            },
             "plan": {
                 "uploads_per_day": 2,
                 "longform_per_day": 1,
@@ -243,7 +270,7 @@ def get_week(week_start: date, db: Session = Depends(get_db)) -> dict:
                 "songs_per_day": 1,
                 "note": PLAN_NOTE,
             },
-            "suggestions": week_suggestions(monday),
+            "suggestions": week_suggestions(monday, language=default_language(channel_key)),
             "slots": payloads,
             "days": [{"date": d, "slots": items} for d, items in by_day.items()],
         }
@@ -251,12 +278,18 @@ def get_week(week_start: date, db: Session = Depends(get_db)) -> dict:
 
 
 @router.post("/weeks/ensure")
-def ensure_week(body: WeekEnsureRequest, db: Session = Depends(get_db)) -> dict:
+def ensure_week(
+    body: WeekEnsureRequest,
+    db: Session = Depends(get_db),
+    channel_key: ChannelKey = Depends(channel_key_dependency),
+) -> dict:
     """Create 14 slots (7 days × morning + evening) with auto deity/mood."""
     monday = _monday_of(body.week_start or date.today())
+    lang = default_language(channel_key)
     existing_rows = db.scalars(
         select(ScheduleSlot)
         .where(ScheduleSlot.week_start == monday)
+        .where(ScheduleSlot.channel_key == channel_key)
         .options(selectinload(ScheduleSlot.song).selectinload(SongProject.shorts))
     ).all()
     existing = {(s.slot_date, (s.daypart or "morning")): s for s in existing_rows}
@@ -271,7 +304,7 @@ def ensure_week(body: WeekEnsureRequest, db: Session = Depends(get_db)) -> dict:
     for i in range(7):
         day = monday + timedelta(days=i)
         for daypart in DAYPARTS:
-            suggestion = suggest_for_date(day, daypart=daypart)
+            suggestion = suggest_for_date(day, daypart=daypart, language=lang)
             h, m = hour_map[daypart]
             publish_at = datetime.combine(day, time(h, m), tzinfo=IST)
             key = (day, daypart)
@@ -291,6 +324,7 @@ def ensure_week(body: WeekEnsureRequest, db: Session = Depends(get_db)) -> dict:
                     week_start=monday,
                     slot_date=day,
                     daypart=daypart,
+                    channel_key=channel_key,
                     publish_at=publish_at,
                     status="planned",
                     auto_deity=suggestion["deity"],
@@ -300,12 +334,13 @@ def ensure_week(body: WeekEnsureRequest, db: Session = Depends(get_db)) -> dict:
             )
             created += 1
     db.commit()
-    linked = auto_link_evening_slots_for_week(db, monday)
-    payload = get_week(monday, db)
+    linked = auto_link_evening_slots_for_week(db, monday, channel_key=channel_key)
+    payload = get_week(monday, db, channel_key=channel_key)
     payload["meta"] = {
         "created_slots": created,
         "refreshed_slots": refreshed,
         "auto_linked_evening": linked,
+        "channel_key": channel_key,
         "uploads_per_day": 2,
         "longform_per_day": 1,
         "shorts_per_day": 1,
@@ -363,6 +398,7 @@ def materialize_slot(
     slot_id: uuid.UUID,
     body: MaterializeRequest,
     db: Session = Depends(get_db),
+    channel_key: ChannelKey = Depends(channel_key_dependency),
 ) -> dict:
     """Create morning song only. Evening Short is cut with Mix and auto-publishes later."""
     slot = db.get(ScheduleSlot, slot_id)
@@ -370,6 +406,12 @@ def materialize_slot(
         raise HTTPException(status_code=404, detail="Slot not found")
     if slot.song_id:
         raise HTTPException(status_code=409, detail="Slot already has a song")
+
+    slot_channel = (getattr(slot, "channel_key", None) or channel_key or "te").strip().lower()
+    if slot_channel != channel_key:
+        # Allow materialize if header omitted mismatch but prefer slot's channel
+        channel_key = slot_channel  # type: ignore[assignment]
+    lang = default_language(slot_channel)
 
     daypart = slot.daypart or "morning"
     fmt = _format_for_daypart(daypart)
@@ -382,7 +424,7 @@ def materialize_slot(
             ),
         )
 
-    suggestion = suggest_for_date(slot.slot_date, daypart=daypart)
+    suggestion = suggest_for_date(slot.slot_date, daypart=daypart, language=lang)
     deity = slot.deity_override or slot.auto_deity or suggestion["deity"]
     raw_topic = slot.topic_override or slot.auto_topic or suggestion["topic"]
     festive_tokens = (
@@ -426,12 +468,15 @@ def materialize_slot(
         mood=mood,
         lyrics_excerpt=None,
         lyrics_full=None,
+        language=lang,
+        channel_key=slot_channel,
     )
 
     song = SongProject(
         title=meta.get("title") or title,
         deity=deity,
-        language="te",
+        channel_key=slot_channel,
+        language=lang,
         music_genre=genre,
         vocal_preference=vocal,
         style_prompt=None,
@@ -456,6 +501,8 @@ def materialize_slot(
         youtube_title=meta["youtube_title"],
         youtube_description=meta["youtube_description"],
         charanams=None,
+        language=lang,
+        channel_key=slot_channel,
     ):
         db.add(
             ShortProject(
@@ -474,9 +521,9 @@ def materialize_slot(
         )
 
     channel_playlists: list[dict[str, str]] = []
-    if yt.is_connected():
+    if yt.is_connected(slot_channel):
         try:
-            channel_playlists = yt.list_playlists()
+            channel_playlists = yt.list_playlists(channel_key=slot_channel)
         except Exception:  # noqa: BLE001 — still create song if YouTube list fails
             channel_playlists = []
     playlist_pick = apply_playlists_to_song(
@@ -494,6 +541,7 @@ def materialize_slot(
         select(ScheduleSlot)
         .where(ScheduleSlot.slot_date == slot.slot_date)
         .where(ScheduleSlot.daypart == "evening")
+        .where(ScheduleSlot.channel_key == slot_channel)
     )
     if evening is not None and evening.status != "skipped":
         link_evening_slot_to_morning(db, evening=evening, morning_song=song)

@@ -104,7 +104,7 @@ def generate_lyrics(
             {
                 "role": "system",
                 "content": (
-                    "You write original Telugu temple keerthana lyrics as strict JSON. "
+                    "You write original temple bhajan/keerthana lyrics as strict JSON. "
                     "Deep traditional bhakti diction only."
                 ),
             },

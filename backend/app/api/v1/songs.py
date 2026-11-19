@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.v1.publish import readiness as song_readiness
+from app.channels import ChannelKey, channel_key_dependency, default_language
 from app.core.config import get_settings
 from app.db import get_db
 from app.content_templates import fill_shorts_pair, sync_song_publish_copy
@@ -110,6 +111,7 @@ def _song_payload(song: SongProject) -> dict:
         "id": str(song.id),
         "title": song.title,
         "deity": song.deity,
+        "channel_key": getattr(song, "channel_key", None) or "te",
         "language": song.language,
         "music_genre": song.music_genre,
         "vocal_preference": song.vocal_preference,
@@ -269,7 +271,11 @@ class AgentGenerateRequest(BaseModel):
 
 
 @router.post("/generate")
-def generate_song_with_agent(body: AgentGenerateRequest, db: Session = Depends(get_db)) -> dict:
+def generate_song_with_agent(
+    body: AgentGenerateRequest,
+    db: Session = Depends(get_db),
+    channel_key: ChannelKey = Depends(channel_key_dependency),
+) -> dict:
     """OpenAI (or Cursor composer fallback) writes Telugu lyrics + style, then creates the song."""
     if not llm.is_configured():
         raise HTTPException(
@@ -294,10 +300,12 @@ def generate_song_with_agent(body: AgentGenerateRequest, db: Session = Depends(g
     except (GeminiLlmError, OpenAILlmError, CursorLlmError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
+    lang = (body.language or default_language(channel_key)).strip() or default_language(channel_key)
     style = enrich_style_prompt(
         (generated.get("style_prompt") or "").strip()
-        or _default_style(body.deity, body.music_genre, body.vocal_preference),
+        or _default_style(body.deity, body.music_genre, body.vocal_preference, language=lang),
         vocal=body.vocal_preference,
+        language=lang,
     )
     lyrics_body = str(generated["lyrics"]).strip()
     gemini_title = (body.title or generated.get("title") or "Untitled Devotional").strip()
@@ -305,7 +313,8 @@ def generate_song_with_agent(body: AgentGenerateRequest, db: Session = Depends(g
     song = SongProject(
         title=gemini_title[:200],
         deity=body.deity,
-        language=body.language,
+        channel_key=channel_key,
+        language=lang,
         music_genre=body.music_genre,
         vocal_preference=body.vocal_preference,
         style_prompt=style,
@@ -405,8 +414,10 @@ def regenerate_lyrics_with_agent(
             body.deity or song.deity,
             body.music_genre or song.music_genre,
             vocal,
+            language=song.language,
         ),
         vocal=vocal,
+        language=song.language,
     )
     lyrics_body = str(generated["lyrics"]).strip()
     next_version = (song.lyrics_versions[-1].version + 1) if song.lyrics_versions else 1
@@ -437,9 +448,13 @@ def regenerate_lyrics_with_agent(
 
 
 @router.get("")
-def list_songs(db: Session = Depends(get_db)) -> dict:
+def list_songs(
+    db: Session = Depends(get_db),
+    channel_key: ChannelKey = Depends(channel_key_dependency),
+) -> dict:
     rows = db.scalars(
         select(SongProject)
+        .where(SongProject.channel_key == channel_key)
         .options(
             selectinload(SongProject.lyrics_versions),
             selectinload(SongProject.music_generations),
@@ -447,16 +462,24 @@ def list_songs(db: Session = Depends(get_db)) -> dict:
         )
         .order_by(SongProject.updated_at.desc())
     ).all()
-    return {"data": [_song_payload(s) for s in rows]}
+    return {"data": [_song_payload(s) for s in rows], "channel_key": channel_key}
 
 
 @router.post("")
-def create_song(body: SongCreate, db: Session = Depends(get_db)) -> dict:
-    style = body.style_prompt or _default_style(body.deity, body.music_genre, body.vocal_preference)
+def create_song(
+    body: SongCreate,
+    db: Session = Depends(get_db),
+    channel_key: ChannelKey = Depends(channel_key_dependency),
+) -> dict:
+    lang = (body.language or default_language(channel_key)).strip() or default_language(channel_key)
+    style = body.style_prompt or _default_style(
+        body.deity, body.music_genre, body.vocal_preference, language=lang
+    )
     song = SongProject(
         title=body.title.strip(),
         deity=body.deity,
-        language=body.language,
+        channel_key=channel_key,
+        language=lang,
         music_genre=body.music_genre,
         vocal_preference=body.vocal_preference,
         style_prompt=style,
@@ -492,6 +515,7 @@ def update_song(song_id: uuid.UUID, body: SongUpdate, db: Session = Depends(get_
         data["style_prompt"] = enrich_style_prompt(
             data["style_prompt"],
             vocal=data.get("vocal_preference") or song.vocal_preference,
+            language=song.language,
         )
     for field, value in data.items():
         setattr(song, field, value)
@@ -531,9 +555,12 @@ def upsert_lyrics(song_id: uuid.UUID, body: LyricsUpsert, db: Session = Depends(
         song.style_prompt = enrich_style_prompt(
             body.style_prompt,
             vocal=song.vocal_preference,
+            language=song.language,
         )
     elif body.approve and not song.style_prompt:
-        song.style_prompt = _default_style(song.deity, song.music_genre, song.vocal_preference)
+        song.style_prompt = _default_style(
+            song.deity, song.music_genre, song.vocal_preference, language=song.language
+        )
     db.flush()
     sync_song_publish_copy(
         song,
@@ -573,8 +600,9 @@ def suno_pack(song_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
     if not lyrics:
         raise HTTPException(status_code=400, detail="Add lyrics first")
     style = enrich_style_prompt(
-        song.style_prompt or _default_style(song.deity, song.music_genre, song.vocal_preference),
+        song.style_prompt or _default_style(song.deity, song.music_genre, song.vocal_preference, language=song.language),
         vocal=song.vocal_preference,
+        language=song.language,
     )
     body = lyrics.body
     pack_text = (

@@ -1,7 +1,62 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import DenoisePage from "./DenoisePage";
-import { API_BASE, withPortalKey } from "./portalAuth";
+import {
+  API_BASE,
+  ChannelKey,
+  channelLabel,
+  getChannelKey,
+  setChannelKey,
+  withPortalKey,
+} from "./portalAuth";
+
+function useStudioChannel(): ChannelKey {
+  const [channel, setChannel] = useState<ChannelKey>(() => getChannelKey());
+  useEffect(() => {
+    const onChange = (e: Event) => {
+      const detail = (e as CustomEvent<ChannelKey>).detail;
+      setChannel(detail === "hi" ? "hi" : "te");
+    };
+    window.addEventListener("ragam-channel-change", onChange);
+    return () => window.removeEventListener("ragam-channel-change", onChange);
+  }, []);
+  return channel;
+}
+
+function ChannelSwitch() {
+  const channel = useStudioChannel();
+  return (
+    <div
+      className="inline-flex items-center rounded-full border border-ink/15 bg-white/80 p-0.5 text-xs font-medium shadow-sm"
+      role="group"
+      aria-label="YouTube channel"
+    >
+      {([
+        { key: "te" as const, label: "Telugu" },
+        { key: "hi" as const, label: "Hindi" },
+      ]).map((opt) => {
+        const active = channel === opt.key;
+        return (
+          <button
+            key={opt.key}
+            type="button"
+            onClick={() => {
+              if (opt.key !== channel) setChannelKey(opt.key);
+            }}
+            className={
+              active
+                ? "rounded-full bg-ink px-3 py-1.5 text-white"
+                : "rounded-full px-3 py-1.5 text-ink/60 hover:text-ink"
+            }
+            aria-pressed={active}
+          >
+            {opt.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 type ReadyResponse = {
   status: string;
@@ -245,6 +300,7 @@ function StatusCard({ label, value, ok }: { label: string; value: string; ok: bo
 }
 
 function SongList() {
+  const channel = useStudioChannel();
   const navigate = useNavigate();
   const [songs, setSongs] = useState<Song[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -262,7 +318,7 @@ function SongList() {
     if (!res.ok) throw new Error("Failed to load songs");
     const body = (await res.json()) as { data: Song[] };
     setSongs(body.data);
-  }, []);
+  }, [channel]);
 
   useEffect(() => {
     void load().catch((err) => setError(err instanceof Error ? err.message : "Load failed"));
@@ -279,6 +335,7 @@ function SongList() {
         body: JSON.stringify({
           title,
           deity: deity || null,
+          language: channel === "hi" ? "hi" : "te",
           lyrics,
           notes: topic || null,
         }),
@@ -308,6 +365,7 @@ function SongList() {
           title: title || null,
           deity: deity || null,
           topic: topic || null,
+          language: channel === "hi" ? "hi" : "te",
           vocal_preference: "m",
         }),
       });
@@ -328,7 +386,9 @@ function SongList() {
   return (
     <main className="mx-auto flex max-w-5xl flex-col gap-10 px-6 py-12">
       <header className="space-y-2">
-        <p className="text-sm uppercase tracking-[0.25em] text-temple/80">Song Studio</p>
+        <p className="text-sm uppercase tracking-[0.25em] text-temple/80">
+          Song Studio · {channelLabel(channel)}
+        </p>
         <h1 className="font-display text-4xl text-ink">Lyrics → Suno → Upload</h1>
         <p className="max-w-2xl text-ink/70">
           Write lyrics here, copy the Suno pack, generate on suno.com with your Pro plan, then
@@ -1576,6 +1636,7 @@ function addDaysISO(isoDate: string, days: number): string {
 }
 
 function WeekSchedule() {
+  const channel = useStudioChannel();
   const [weekStart, setWeekStart] = useState(() => mondayLocalISO());
   const [days, setDays] = useState<ScheduleDay[]>([]);
   const [planNote, setPlanNote] = useState("");
@@ -1607,7 +1668,7 @@ function WeekSchedule() {
       }
       setDays([...grouped.entries()].map(([date, slots]) => ({ date, slots })));
     }
-  }, [weekStart]);
+  }, [weekStart, channel]);
 
   useEffect(() => {
     void load().catch((err) => setError(err instanceof Error ? err.message : "Load failed"));
@@ -1685,7 +1746,9 @@ function WeekSchedule() {
   return (
     <main className="mx-auto flex max-w-5xl flex-col gap-8 px-6 py-12">
       <header className="space-y-2">
-        <p className="text-sm uppercase tracking-[0.25em] text-temple/80">Weekly plan</p>
+        <p className="text-sm uppercase tracking-[0.25em] text-temple/80">
+          Weekly plan · {channelLabel(channel)}
+        </p>
         <h1 className="font-display text-4xl text-ink">Morning video · evening Short auto</h1>
         <p className="max-w-2xl text-ink/70">{planNote}</p>
       </header>
@@ -1896,6 +1959,7 @@ type QueueSong = {
 };
 
 function ReadyQueue() {
+  const channel = useStudioChannel();
   const [buckets, setBuckets] = useState<Record<string, QueueSong[]>>({});
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [note, setNote] = useState("");
@@ -1915,7 +1979,7 @@ function ReadyQueue() {
     setBuckets(body.data.buckets);
     setCounts(body.data.counts);
     setNote(body.data.note);
-  }, []);
+  }, [channel]);
 
   useEffect(() => {
     void load().catch((err) => setError(err instanceof Error ? err.message : "Load failed"));
@@ -1975,7 +2039,9 @@ function ReadyQueue() {
   return (
     <main className="mx-auto flex max-w-5xl flex-col gap-8 px-6 py-12">
       <header className="space-y-2">
-        <p className="text-sm uppercase tracking-[0.25em] text-temple/80">Publish desk</p>
+        <p className="text-sm uppercase tracking-[0.25em] text-temple/80">
+          Publish desk · {channelLabel(channel)}
+        </p>
         <h1 className="font-display text-4xl text-ink">Ready queue</h1>
         <p className="max-w-2xl text-ink/70">{note}</p>
         <p className="text-sm text-ink/55">
@@ -2141,12 +2207,19 @@ function BrandingPage() {
 }
 
 export default function App() {
+  const channel = useStudioChannel();
   return (
     <div>
       <nav className="flex flex-wrap items-center justify-between gap-3 border-b border-ink/10 px-6 py-4">
-        <Link to="/" className="font-display text-xl font-semibold text-ink">
-          Ragam
-        </Link>
+        <div className="flex flex-wrap items-center gap-4">
+          <Link to="/" className="font-display text-xl font-semibold text-ink">
+            Ragam
+          </Link>
+          <ChannelSwitch />
+          <span className="hidden text-xs text-ink/45 sm:inline">
+            Producing for {channelLabel(channel)} channel
+          </span>
+        </div>
         <div className="flex flex-wrap gap-4 text-sm">
           <Link to="/ready" className="text-ink/70 hover:text-ink">
             Ready queue
@@ -2163,6 +2236,12 @@ export default function App() {
           <Link to="/denoise" className="text-ink/70 hover:text-ink">
             Noise remove
           </Link>
+          <a
+            href={`${API_BASE}/api/v1/youtube/auth?channel_key=${channel}`}
+            className="text-ink/70 hover:text-ink"
+          >
+            Connect YouTube
+          </a>
         </div>
       </nav>
       <Routes>

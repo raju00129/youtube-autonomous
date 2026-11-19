@@ -108,9 +108,13 @@ class Settings(BaseSettings):
     youtube_channel_id: str = ""
     youtube_channel_handle: str = ""
     youtube_channel_url: str = ""
+    # Hindi channel (same Google account, separate YouTube channel + OAuth token)
+    youtube_channel_id_hi: str = ""
+    youtube_channel_handle_hi: str = "DevotionalSongsHindi-o9"
+    youtube_channel_url_hi: str = "https://www.youtube.com/@DevotionalSongsHindi-o9"
     # Self-disclose "Altered or synthetic content" (AI music/visuals) on every upload
     youtube_contains_synthetic_media: bool = True
-    # Video + spoken-audio language on YouTube (drives auto-caption language)
+    # Fallback video language when song/channel not available (prefer song.channel_key)
     youtube_language: str = "te"
 
     n8n_webhook_secret: str = ""

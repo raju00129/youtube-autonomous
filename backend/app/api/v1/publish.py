@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from app.channels import ChannelKey, channel_key_dependency
 from app.db import get_db
 from app.models import ScheduleSlot, ShortProject, SongProject
 from app.providers import youtube as yt
@@ -162,10 +163,14 @@ def _pipeline_for(song: SongProject) -> dict:
 
 
 @router.get("/queue")
-def publish_queue(db: Session = Depends(get_db)) -> dict:
+def publish_queue(
+    db: Session = Depends(get_db),
+    channel_key: ChannelKey = Depends(channel_key_dependency),
+) -> dict:
     """List songs grouped so you can review and publish anytime (including mid-week)."""
     rows = db.scalars(
         select(SongProject)
+        .where(SongProject.channel_key == channel_key)
         .options(
             selectinload(SongProject.lyrics_versions),
             selectinload(SongProject.music_generations),
@@ -186,7 +191,9 @@ def publish_queue(db: Session = Depends(get_db)) -> dict:
 
     return {
         "data": {
-            "youtube_connected": yt.is_connected(),
+            "channel_key": channel_key,
+            "youtube_connected": yt.is_connected(channel_key),
+            "auth_url": f"/api/v1/youtube/auth?channel_key={channel_key}",
             "buckets": buckets,
             "counts": {k: len(v) for k, v in buckets.items()},
             "note": (
@@ -238,10 +245,14 @@ def schedule_or_publish_now(
                     "missing": ready["missing"],
                 },
             )
-        if not yt.is_connected():
+        song_ck = getattr(song, "channel_key", None) or "te"
+        if not yt.is_connected(song_ck):
             raise HTTPException(
                 status_code=400,
-                detail="YouTube not connected — open /api/v1/youtube/auth first",
+                detail=(
+                    f"YouTube not connected for '{song_ck}' — "
+                    f"open /api/v1/youtube/auth?channel_key={song_ck}"
+                ),
             )
         from app.services_pipeline import claim_song_stage
         from app.services_publish import PublishError, publish_song_to_youtube

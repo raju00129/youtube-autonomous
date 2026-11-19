@@ -259,7 +259,7 @@ def song_fill_lyrics(
     from app.providers.openai_llm import OpenAILlmError
     from app.style_prompt import enrich_style_prompt
 
-    celery_progress(self, 5, "Writing Telugu lyrics with Gemini…", song_id=song_id)
+    celery_progress(self, 5, "Writing lyrics with Gemini…", song_id=song_id)
     db = SessionLocal()
     try:
         song = db.scalar(
@@ -274,6 +274,12 @@ def song_fill_lyrics(
             raise ValueError(f"Song not found: {song_id}")
         if song.lyrics_versions:
             return {"song_id": song_id, "skipped": True, "reason": "already_has_lyrics"}
+
+        song_lang = (song.language or "te").strip() or "te"
+        lang_label = "Hindi" if song_lang.startswith("hi") else "Telugu"
+        celery_progress(
+            self, 8, f"Writing {lang_label} lyrics with Gemini…", song_id=song_id
+        )
 
         try:
             from app.lyrics_uniqueness import recent_lyrics_echo
@@ -290,6 +296,7 @@ def song_fill_lyrics(
                 deity=deity or song.deity,
                 topic=topic or song.notes,
                 vocal=vocal or song.vocal_preference or "m",
+                language=song_lang,
                 music_genre=music_genre or song.music_genre,
                 energy_hint=energy_hint,
                 avoid_echo=avoid or None,
@@ -307,6 +314,7 @@ def song_fill_lyrics(
             (generated.get("style_prompt") or "").strip()
             or (song.style_prompt or ""),
             vocal=vocal or song.vocal_preference,
+            language=song_lang,
         )
         gemini_title = str(generated.get("title") or title_hint)[:200]
         song.title = gemini_title
@@ -341,6 +349,8 @@ def song_fill_lyrics(
                 youtube_title=song.youtube_title,
                 youtube_description=song.youtube_description,
                 charanams=[pallavi] if pallavi else None,
+                language=song_lang,
+                channel_key=getattr(song, "channel_key", None) or "te",
             )
         }
         for short in song.shorts:

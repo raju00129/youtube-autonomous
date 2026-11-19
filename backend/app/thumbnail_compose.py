@@ -35,9 +35,23 @@ DEITY_PALETTES: dict[str, tuple[tuple[int, int, int], tuple[int, int, int], tupl
 }
 
 
-def _font_candidates() -> list[Path]:
-    """Prefer heavy Telugu faces used on modern YouTube thumbs."""
+def _font_candidates(*, language: str | None = "te") -> list[Path]:
+    """Prefer heavy Indic faces used on modern YouTube thumbs."""
     here = Path(__file__).resolve().parent / "assets" / "fonts"
+    hindi = (language or "te").strip().lower().startswith("hi")
+    if hindi:
+        return [
+            here / "NotoSansDevanagari-Bold.ttf",
+            here / "NotoSansDevanagari-Regular.ttf",
+            here / "NotoSerifDevanagari-Bold.ttf",
+            Path("/usr/share/fonts/truetype/noto/NotoSansDevanagari-Bold.ttf"),
+            Path("/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf"),
+            Path("/usr/share/fonts/truetype/noto/NotoSerifDevanagari-Bold.ttf"),
+            Path("/usr/share/fonts/truetype/lohit-devanagari/Lohit-Devanagari.ttf"),
+            # Fallbacks if Devanagari fonts not installed yet
+            here / "NotoSansTelugu-Bold.ttf",
+            Path("/usr/share/fonts/truetype/noto/NotoSansTelugu-Bold.ttf"),
+        ]
     return [
         here / "Ramabhadra-Regular.ttf",
         here / "BalooTammudu2-ExtraBold.ttf",
@@ -51,14 +65,22 @@ def _font_candidates() -> list[Path]:
     ]
 
 
-def load_telugu_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    for path in _font_candidates():
+def load_telugu_font(
+    size: int, *, language: str | None = "te"
+) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    for path in _font_candidates(language=language):
         if path.exists():
             try:
                 return ImageFont.truetype(str(path), size=size)
             except OSError:
                 continue
     return ImageFont.load_default()
+
+
+def load_overlay_font(
+    size: int, *, language: str | None = "te"
+) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    return load_telugu_font(size, language=language)
 
 
 def _draw_yt_text(
@@ -202,11 +224,17 @@ def _draw_filigree(draw: ImageDraw.ImageDraw, cx: int, y: int, half_w: int, colo
     draw.ellipse((x4 - 4, y - 4, x4 + 4, y + 4), fill=color)
 
 
-def thumbnail_hook_title(title: str, *, max_words: int = 5, max_chars: int = 36) -> str:
+def thumbnail_hook_title(
+    title: str,
+    *,
+    max_words: int = 5,
+    max_chars: int = 36,
+    language: str | None = "te",
+) -> str:
     """Short, punchy hook — modern thumbs use ~3–5 words, not the full YouTube title."""
-    clean = sanitize_overlay_text(title, max_len=120)
+    clean = sanitize_overlay_text(title, max_len=120, language=language)
     if not clean:
-        return "Ragam Spiritual"
+        return "Devotional Songs Hindi" if (language or "").startswith("hi") else "Ragam Spiritual"
     words = clean.split()
     if len(words) <= max_words and len(clean) <= max_chars:
         return clean
@@ -214,8 +242,10 @@ def thumbnail_hook_title(title: str, *, max_words: int = 5, max_chars: int = 36)
     return short[:max_chars].rstrip()
 
 
-def sanitize_overlay_text(text: str | None, *, max_len: int = 110) -> str:
-    """Keep Telugu + Latin for Pillow overlay; drop Devanagari / junk symbols that show as boxes."""
+def sanitize_overlay_text(
+    text: str | None, *, max_len: int = 110, language: str | None = "te"
+) -> str:
+    """Keep Indic script + Latin for Pillow overlay; drop other scripts that show as boxes."""
     if not text:
         return ""
     # Normalize fancy separators / whitespace
@@ -228,19 +258,29 @@ def sanitize_overlay_text(text: str | None, *, max_len: int = 110) -> str:
         .replace("—", " ")
         .replace("–", " ")
     )
-    # Keep Telugu block, basic Latin, digits, and simple punctuation
-    cleaned = re.sub(
-        r"[^\u0C00-\u0C7F\u0020-\u007E\n]",
-        "",
-        cleaned,
-    )
+    hindi = (language or "te").strip().lower().startswith("hi")
+    if hindi:
+        # Devanagari + Latin
+        cleaned = re.sub(r"[^\u0900-\u097F\u0020-\u007E\n]", "", cleaned)
+    else:
+        # Telugu + Latin
+        cleaned = re.sub(r"[^\u0C00-\u0C7F\u0020-\u007E\n]", "", cleaned)
     cleaned = re.sub(r"[ \t]+", " ", cleaned).strip()
     return cleaned[:max_len]
 
 
-def extract_pallavi_line(lyrics: str | None) -> str | None:
+def extract_pallavi_line(
+    lyrics: str | None, *, language: str | None = None
+) -> str | None:
     if not lyrics:
         return None
+    # Infer language from script if not provided (Hindi Devanagari vs Telugu)
+    lang = language
+    if not lang:
+        sample = lyrics[:800]
+        dev = len(re.findall(r"[\u0900-\u097F]", sample))
+        te = len(re.findall(r"[\u0C00-\u0C7F]", sample))
+        lang = "hi" if dev > te else "te"
     m = re.search(
         r"\[Pallavi\]\s*(.+?)(?=\n\s*\[|\Z)",
         lyrics,
@@ -248,13 +288,13 @@ def extract_pallavi_line(lyrics: str | None) -> str | None:
     )
     if not m:
         for line in lyrics.splitlines():
-            s = sanitize_overlay_text(line.strip(), max_len=90)
+            s = sanitize_overlay_text(line.strip(), max_len=90, language=lang)
             if s and not s.startswith("["):
                 return s
         return None
     block = m.group(1).strip()
     lines = [
-        sanitize_overlay_text(ln.strip(), max_len=90)
+        sanitize_overlay_text(ln.strip(), max_len=90, language=lang)
         for ln in block.splitlines()
         if ln.strip() and not ln.strip().startswith("[")
     ]
@@ -432,6 +472,7 @@ def compose_thumbnail(
     daypart: str | None = None,
     subtitle: str | None = None,
     prefer_photo: bool = False,
+    language: str | None = "te",
 ) -> Path:
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -511,25 +552,38 @@ def compose_thumbnail(
     canvas = Image.alpha_composite(base.convert("RGBA"), overlay)
 
     draw = ImageDraw.Draw(canvas)
-    title_font = load_telugu_font(168)
-    hook_font = load_telugu_font(56)
-    brand_font = load_telugu_font(32)
+    title_font = load_overlay_font(168, language=language)
+    hook_font = load_overlay_font(56, language=language)
+    brand_font = load_overlay_font(32, language=language)
 
-    hook = thumbnail_hook_title(title.strip() or "Ragam Spiritual", max_words=4, max_chars=28)
-    if hook and not hook.endswith(("!", "।")):
+    default_brand = (
+        "Devotional Songs Hindi"
+        if (language or "").startswith("hi")
+        else "Ragam Spiritual"
+    )
+    hook = thumbnail_hook_title(
+        title.strip() or default_brand, max_words=4, max_chars=28, language=language
+    )
+    if hook and not hook.endswith(("!", "।", "॥")):
         hook = f"{hook}!"
-    pallavi = extract_pallavi_line(lyrics)
-    sub_line = sanitize_overlay_text(subtitle, max_len=40) if subtitle else ""
-    if not sub_line or sub_line.lower() in {hook.lower().rstrip("!"), "ragam spiritual"}:
-        sub_line = sanitize_overlay_text(pallavi, max_len=36) if pallavi else ""
-        if sub_line and thumbnail_hook_title(sub_line, max_words=4, max_chars=28) == hook.rstrip("!"):
+    pallavi = extract_pallavi_line(lyrics, language=language)
+    sub_line = (
+        sanitize_overlay_text(subtitle, max_len=40, language=language) if subtitle else ""
+    )
+    if not sub_line or sub_line.lower() in {hook.lower().rstrip("!"), "ragam spiritual", "devotional songs hindi"}:
+        sub_line = (
+            sanitize_overlay_text(pallavi, max_len=36, language=language) if pallavi else ""
+        )
+        if sub_line and thumbnail_hook_title(
+            sub_line, max_words=4, max_chars=28, language=language
+        ) == hook.rstrip("!"):
             sub_line = ""
 
     max_text_w = int(W * 0.52) if text_on_right else W - 160
     size = 172
     lines = _wrap(draw, hook, title_font, max_text_w)[:2]
     while size > 100:
-        title_font = load_telugu_font(size)
+        title_font = load_overlay_font(size, language=language)
         lines = _wrap(draw, hook, title_font, max_text_w)[:2]
         too_wide = any(draw.textlength(ln, font=title_font) > max_text_w for ln in lines)
         if len(lines) <= 2 and not too_wide:

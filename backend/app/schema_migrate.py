@@ -25,6 +25,7 @@ SONG_COLUMNS = [
     ("youtube_playlist_title", "VARCHAR(200)"),
     ("shorts_playlist_id", "VARCHAR(64)"),
     ("shorts_playlist_title", "VARCHAR(200)"),
+    ("channel_key", "VARCHAR(8) DEFAULT 'te'"),
 ]
 
 SHORT_COLUMNS = [
@@ -65,7 +66,24 @@ def ensure_schema() -> None:
                 "UPDATE schedule_slots SET daypart = 'morning' WHERE daypart IS NULL OR daypart = ''"
             )
         )
-        # Drop duplicate empty planned slots (same date+daypart), keep one
+        conn.execute(
+            text(
+                "ALTER TABLE schedule_slots ADD COLUMN IF NOT EXISTS channel_key VARCHAR(8) DEFAULT 'te'"
+            )
+        )
+        conn.execute(
+            text(
+                "UPDATE schedule_slots SET channel_key = 'te' "
+                "WHERE channel_key IS NULL OR channel_key = ''"
+            )
+        )
+        conn.execute(
+            text(
+                "UPDATE song_projects SET channel_key = 'te' "
+                "WHERE channel_key IS NULL OR channel_key = ''"
+            )
+        )
+        # Drop duplicate empty planned slots (same date+daypart+channel), keep one
         conn.execute(
             text(
                 """
@@ -74,6 +92,7 @@ def ensure_schema() -> None:
                   AND a.slot_date = b.slot_date
                   AND a.week_start = b.week_start
                   AND COALESCE(a.daypart, 'morning') = COALESCE(b.daypart, 'morning')
+                  AND COALESCE(a.channel_key, 'te') = COALESCE(b.channel_key, 'te')
                   AND a.ctid < b.ctid
                 """
             )

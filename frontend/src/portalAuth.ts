@@ -1,7 +1,24 @@
 const STORAGE_KEY = "ragam_portal_unlocked";
 const KEY_STORAGE = "ragam_portal_key";
+const CHANNEL_STORAGE = "ragam_channel_key";
 
 export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8010";
+
+export type ChannelKey = "te" | "hi";
+
+export function getChannelKey(): ChannelKey {
+  const raw = (localStorage.getItem(CHANNEL_STORAGE) || "te").trim().toLowerCase();
+  return raw === "hi" ? "hi" : "te";
+}
+
+export function setChannelKey(key: ChannelKey): void {
+  localStorage.setItem(CHANNEL_STORAGE, key);
+  window.dispatchEvent(new CustomEvent("ragam-channel-change", { detail: key }));
+}
+
+export function channelLabel(key: ChannelKey = getChannelKey()): string {
+  return key === "hi" ? "Hindi" : "Telugu";
+}
 
 export function isPortalUnlocked(): boolean {
   return sessionStorage.getItem(STORAGE_KEY) === "1";
@@ -73,6 +90,9 @@ export function installPortalFetch(): void {
     const key = getPortalKey();
     if (key && !headers.has("X-Portal-Key")) {
       headers.set("X-Portal-Key", key);
+    }
+    if (!headers.has("X-Channel-Key")) {
+      headers.set("X-Channel-Key", getChannelKey());
     }
     return original(input, {
       ...init,

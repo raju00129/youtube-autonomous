@@ -13,13 +13,13 @@ const WORKSPACE = process.env.LYRICS_WORKSPACE || "/tmp/ragam-lyrics-workspace";
 // auto | cli | sdk — auto prefers Cursor CLI (ask mode) when available, else SDK
 const BACKEND = (process.env.LYRICS_BACKEND || "auto").toLowerCase();
 const CLI_TIMEOUT_MS = Number(process.env.LYRICS_CLI_TIMEOUT_MS || 180_000);
-// Prefer plan-included Composer first; third-party (Gemini) hits Pro usage caps quickly.
+// Prefer cheaper/included models when Composer hits Pro usage caps.
 const MODEL_FALLBACKS = [
   MODEL,
+  "claude-haiku-5-5",
+  "gemini-3-flash",
   "composer-2.5",
   "composer-2",
-  "gemini-3-flash",
-  "claude-haiku-5-5",
 ].filter((v, i, a) => v && a.indexOf(v) === i);
 
 fs.mkdirSync(WORKSPACE, { recursive: true });

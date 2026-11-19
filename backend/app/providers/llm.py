@@ -117,7 +117,11 @@ def generate_lyrics(**kwargs: Any) -> dict[str, Any]:
             errors.append(f"openai: {str(exc)[:240]}")
             raise OpenAILlmError(" | ".join(errors)) from exc
 
+    hint = (
+        "Gemini prepaid credits empty and/or Cursor usage limit hit. "
+        "Top up AI Studio billing, raise Cursor spend limit, or set OPENAI_API_KEY."
+    )
     raise GeminiLlmError(
-        "No LLM available. Set GEMINI_API_KEY (preferred) and/or CURSOR_API_KEY. "
+        f"No LLM available. {hint} "
         + (" | ".join(errors) if errors else "")
     )

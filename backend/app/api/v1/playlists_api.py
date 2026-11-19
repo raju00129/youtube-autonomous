@@ -93,11 +93,14 @@ def assign_playlist(
     song_id: uuid.UUID,
     body: AssignPlaylistBody,
     db: Session = Depends(get_db),
+    channel_key: ChannelKey = Depends(channel_key_dependency),
 ) -> dict:
     song = db.get(SongProject, song_id)
     if not song:
         raise HTTPException(status_code=404, detail="Song not found")
-    ck = getattr(song, "channel_key", None) or "te"
+    ck = (getattr(song, "channel_key", None) or "te").strip().lower()
+    if ck != channel_key:
+        raise HTTPException(status_code=404, detail="Song not found")
 
     # Manual select — always wins when playlist_id is provided
     if body.playlist_id and not body.auto:

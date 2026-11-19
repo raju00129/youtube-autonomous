@@ -525,6 +525,7 @@ function SongList() {
 
 function SongDetail() {
   const channel = useStudioChannel();
+  const navigate = useNavigate();
   const { songId } = useParams();
   const [song, setSong] = useState<Song | null>(null);
   const [pack, setPack] = useState<SunoPack | null>(null);
@@ -532,6 +533,7 @@ function SongDetail() {
   const [lyrics, setLyrics] = useState("");
   const [style, setStyle] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [crossChannel, setCrossChannel] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [visualProgress, setVisualProgress] = useState<{
@@ -590,12 +592,27 @@ function SongDetail() {
 
   const load = useCallback(async () => {
     if (!songId) return;
+    setCrossChannel(false);
+    const active = getChannelKey();
     const [songRes, packRes] = await Promise.all([
       fetch(`${API_BASE}/api/v1/songs/${songId}`),
       fetch(`${API_BASE}/api/v1/songs/${songId}/suno-pack`),
     ]);
+    if (songRes.status === 404) {
+      setSong(null);
+      setPack(null);
+      setCrossChannel(true);
+      throw new Error("This song belongs to the other channel");
+    }
     if (!songRes.ok) throw new Error("Song not found");
     const songBody = (await songRes.json()) as { data: Song };
+    const songCk = (songBody.data.channel_key || "te").toLowerCase();
+    if (songCk !== active) {
+      setSong(null);
+      setPack(null);
+      navigate("/songs", { replace: true });
+      return;
+    }
     setSong(songBody.data);
     setTitle(songBody.data.title ?? "");
     setLyrics(songBody.data.lyrics?.body ?? "");
@@ -610,7 +627,7 @@ function SongDetail() {
     } else {
       setPack(null);
     }
-  }, [songId]);
+  }, [songId, navigate, channel]);
 
   const loadPlaylists = useCallback(async () => {
     try {
@@ -628,9 +645,11 @@ function SongDetail() {
     } catch (err) {
       setPlaylistHint(err instanceof Error ? err.message : "Could not load playlists");
     }
-  }, []);
+  }, [channel]);
 
   useEffect(() => {
+    setSong(null);
+    setError(null);
     void load().catch((err) => setError(err instanceof Error ? err.message : "Load failed"));
   }, [load]);
 
@@ -793,7 +812,20 @@ function SongDetail() {
   if (!song) {
     return (
       <main className="mx-auto max-w-5xl px-6 py-12">
-        <p className="text-ink/60">{error ?? "Loading…"}</p>
+        {crossChannel ? (
+          <div className="space-y-3">
+            <p className="text-ink">This song belongs to the other channel.</p>
+            <p className="text-sm text-ink/60">
+              Switch to {channel === "hi" ? "Telugu" : "Hindi"} studio, or go back to this
+              channel&apos;s song list.
+            </p>
+            <Link to="/songs" className="inline-block text-temple hover:underline">
+              ← Back to songs
+            </Link>
+          </div>
+        ) : (
+          <p className="text-ink/60">{error ?? "Loading…"}</p>
+        )}
       </main>
     );
   }

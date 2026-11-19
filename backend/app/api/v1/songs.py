@@ -217,7 +217,17 @@ def _song_payload(song: SongProject) -> dict:
     }
 
 
-def _load_song(db: Session, song_id: uuid.UUID) -> SongProject:
+def _require_song_channel(song: SongProject, channel_key: str) -> None:
+    """Treat cross-channel access as not found so studios stay isolated."""
+    song_ck = (getattr(song, "channel_key", None) or "te").strip().lower()
+    req = (channel_key or "te").strip().lower()
+    if song_ck != req:
+        raise HTTPException(status_code=404, detail="Song not found")
+
+
+def _load_song(
+    db: Session, song_id: uuid.UUID, channel_key: str | None = None
+) -> SongProject:
     song = db.scalar(
         select(SongProject)
         .where(SongProject.id == song_id)
@@ -229,6 +239,8 @@ def _load_song(db: Session, song_id: uuid.UUID) -> SongProject:
     )
     if not song:
         raise HTTPException(status_code=404, detail="Song not found")
+    if channel_key is not None:
+        _require_song_channel(song, channel_key)
     return song
 
 
@@ -400,7 +412,7 @@ def regenerate_lyrics_with_agent(
     channel_key: ChannelKey = Depends(channel_key_dependency),
 ) -> dict:
     """Re-run Gemini (Cursor/OpenAI fallback) and append a new lyrics version."""
-    song = _load_song(db, song_id)
+    song = _load_song(db, song_id, channel_key)
     if not llm.is_configured():
         raise HTTPException(
             status_code=503,
@@ -481,7 +493,7 @@ def regenerate_lyrics_with_agent(
     )
     # No auto thumbnail — user uploads or clicks Generate on song page.
     db.commit()
-    return {"data": _song_payload(_load_song(db, song_id))}
+    return {"data": _song_payload(_load_song(db, song_id, channel_key))}
 
 
 @router.get("")
@@ -539,13 +551,22 @@ def create_song(
 
 
 @router.get("/{song_id}")
-def get_song(song_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
-    return {"data": _song_payload(_load_song(db, song_id))}
+def get_song(
+    song_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    channel_key: ChannelKey = Depends(channel_key_dependency),
+) -> dict:
+    return {"data": _song_payload(_load_song(db, song_id, channel_key))}
 
 
 @router.patch("/{song_id}")
-def update_song(song_id: uuid.UUID, body: SongUpdate, db: Session = Depends(get_db)) -> dict:
-    song = _load_song(db, song_id)
+def update_song(
+    song_id: uuid.UUID,
+    body: SongUpdate,
+    db: Session = Depends(get_db),
+    channel_key: ChannelKey = Depends(channel_key_dependency),
+) -> dict:
+    song = _load_song(db, song_id, channel_key)
     data = body.model_dump(exclude_unset=True)
     publish_at = data.pop("publish_at", None)
     if "style_prompt" in data and data["style_prompt"] is not None:
@@ -564,12 +585,17 @@ def update_song(song_id: uuid.UUID, body: SongUpdate, db: Session = Depends(get_
             if song.stage in {"music_ready", "lyrics_draft", "awaiting_audio"}:
                 song.stage = "ready_to_publish"
     db.commit()
-    return {"data": _song_payload(_load_song(db, song_id))}
+    return {"data": _song_payload(_load_song(db, song_id, channel_key))}
 
 
 @router.put("/{song_id}/lyrics")
-def upsert_lyrics(song_id: uuid.UUID, body: LyricsUpsert, db: Session = Depends(get_db)) -> dict:
-    song = _load_song(db, song_id)
+def upsert_lyrics(
+    song_id: uuid.UUID,
+    body: LyricsUpsert,
+    db: Session = Depends(get_db),
+    channel_key: ChannelKey = Depends(channel_key_dependency),
+) -> dict:
+    song = _load_song(db, song_id, channel_key)
     next_version = (song.lyrics_versions[-1].version + 1) if song.lyrics_versions else 1
     # New version; clear prior approvals if rewriting after approve
     if body.approve:
@@ -607,12 +633,16 @@ def upsert_lyrics(song_id: uuid.UUID, body: LyricsUpsert, db: Session = Depends(
         lock_title=bool(manual_title),
     )
     db.commit()
-    return {"data": _song_payload(_load_song(db, song_id))}
+    return {"data": _song_payload(_load_song(db, song_id, channel_key))}
 
 
 @router.post("/{song_id}/lyrics/approve")
-def approve_lyrics(song_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
-    song = _load_song(db, song_id)
+def approve_lyrics(
+    song_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    channel_key: ChannelKey = Depends(channel_key_dependency),
+) -> dict:
+    song = _load_song(db, song_id, channel_key)
     if not song.lyrics_versions:
         raise HTTPException(status_code=400, detail="No lyrics to approve")
     for lv in song.lyrics_versions:
@@ -625,13 +655,17 @@ def approve_lyrics(song_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
     lyrics = song.lyrics_versions[-1].body
     sync_song_publish_copy(song, lyrics=lyrics, gemini_title=song.title, refresh_shorts=True)
     db.commit()
-    return {"data": _song_payload(_load_song(db, song_id))}
+    return {"data": _song_payload(_load_song(db, song_id, channel_key))}
 
 
 @router.get("/{song_id}/suno-pack")
-def suno_pack(song_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
+def suno_pack(
+    song_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    channel_key: ChannelKey = Depends(channel_key_dependency),
+) -> dict:
     """Copy-ready title, style, and lyrics for pasting into the Suno app."""
-    song = _load_song(db, song_id)
+    song = _load_song(db, song_id, channel_key)
     approved = next((l for l in reversed(song.lyrics_versions) if l.approved), None)
     lyrics = approved or (song.lyrics_versions[-1] if song.lyrics_versions else None)
     if not lyrics:
@@ -674,8 +708,9 @@ async def upload_music(
     file: UploadFile = File(...),
     notes: str | None = Form(default=None),
     db: Session = Depends(get_db),
+    channel_key: ChannelKey = Depends(channel_key_dependency),
 ) -> dict:
-    song = _load_song(db, song_id)
+    song = _load_song(db, song_id, channel_key)
     approved = any(l.approved for l in song.lyrics_versions)
     if not approved and song.lyrics_versions:
         # Allow upload even if not formally approved, but prefer approve flow
@@ -720,7 +755,7 @@ async def upload_music(
     db.add(music)
     song.stage = "music_ready"
     db.commit()
-    return {"data": _song_payload(_load_song(db, song_id))}
+    return {"data": _song_payload(_load_song(db, song_id, channel_key))}
 
 
 @router.get("/{song_id}/music/{music_id}/file")
@@ -728,8 +763,9 @@ def download_music(
     song_id: uuid.UUID,
     music_id: uuid.UUID,
     db: Session = Depends(get_db),
+    channel_key: ChannelKey = Depends(channel_key_dependency),
 ) -> FileResponse:
-    song = _load_song(db, song_id)
+    song = _load_song(db, song_id, channel_key)
     music = next((m for m in song.music_generations if m.id == music_id), None)
     if not music or not music.file_path:
         raise HTTPException(status_code=404, detail="Audio not found")
@@ -748,9 +784,10 @@ async def upload_deity_image(
     song_id: uuid.UUID,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    channel_key: ChannelKey = Depends(channel_key_dependency),
 ) -> dict:
     """Optional deity / temple still used as thumbnail background (local compose, $0 AI)."""
-    song = _load_song(db, song_id)
+    song = _load_song(db, song_id, channel_key)
     name = file.filename or "deity.jpg"
     suffix = Path(name).suffix.lower() or ".jpg"
     if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
@@ -765,7 +802,7 @@ async def upload_deity_image(
     dest.write_bytes(data)
     song.deity_image_path = str(dest)
     db.commit()
-    return {"data": _song_payload(_load_song(db, song_id))}
+    return {"data": _song_payload(_load_song(db, song_id, channel_key))}
 
 
 @router.post("/{song_id}/thumbnail/upload")
@@ -773,12 +810,13 @@ async def upload_thumbnail(
     song_id: uuid.UUID,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    channel_key: ChannelKey = Depends(channel_key_dependency),
 ) -> dict:
     """Upload a finished YouTube thumbnail (e.g. from ChatGPT) — used as-is for publish."""
     from PIL import Image
     import io
 
-    song = _load_song(db, song_id)
+    song = _load_song(db, song_id, channel_key)
     name = file.filename or "thumbnail.jpg"
     suffix = Path(name).suffix.lower() or ".jpg"
     if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
@@ -814,7 +852,7 @@ async def upload_thumbnail(
 
     song.thumbnail_path = str(dest)
     db.commit()
-    song = _load_song(db, song_id)
+    song = _load_song(db, song_id, channel_key)
     return {
         "data": {
             "song_id": str(song.id),
@@ -828,9 +866,13 @@ async def upload_thumbnail(
 
 
 @router.post("/{song_id}/thumbnail/generate")
-def generate_thumbnail(song_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
+def generate_thumbnail(
+    song_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    channel_key: ChannelKey = Depends(channel_key_dependency),
+) -> dict:
     """Force a NEW Kling premium thumb using the latest lyrics title + refreshed YouTube copy."""
-    song = _load_song(db, song_id)
+    song = _load_song(db, song_id, channel_key)
     lyrics = song.lyrics_versions[-1].body if song.lyrics_versions else None
     # Re-sync YouTube package from latest lyrics before painting the title into the thumb
     meta = sync_song_publish_copy(
@@ -849,7 +891,7 @@ def generate_thumbnail(song_id: uuid.UUID, db: Session = Depends(get_db)) -> dic
         raise HTTPException(status_code=400, detail="Add lyrics or title before thumbnail")
     _out, engine = result
     db.commit()
-    song = _load_song(db, song_id)
+    song = _load_song(db, song_id, channel_key)
     thumb_title = overlay_title_from_song(song, lyrics)
     note = {
         "gemini_premium": (
@@ -878,8 +920,12 @@ def generate_thumbnail(song_id: uuid.UUID, db: Session = Depends(get_db)) -> dic
 
 
 @router.get("/{song_id}/thumbnail")
-def get_thumbnail(song_id: uuid.UUID, db: Session = Depends(get_db)) -> FileResponse:
-    song = _load_song(db, song_id)
+def get_thumbnail(
+    song_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    channel_key: ChannelKey = Depends(channel_key_dependency),
+) -> FileResponse:
+    song = _load_song(db, song_id, channel_key)
     if not song.thumbnail_path:
         raise HTTPException(status_code=404, detail="No thumbnail yet — generate first")
     path = Path(song.thumbnail_path)

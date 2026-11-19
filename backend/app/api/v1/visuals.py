@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import select
 
+from app.channels import ChannelKey, channel_key_dependency
 from app.core.config import get_settings
 from app.db import get_db
 from app.models import SongProject
@@ -31,7 +32,16 @@ ALLOWED_VIDEO = {
 ALLOWED_VIDEO_SUFFIXES = {".mp4", ".mov", ".webm", ".m4v"}
 
 
-def _load_song(db: Session, song_id: uuid.UUID) -> SongProject:
+def _require_song_channel(song: SongProject, channel_key: str) -> None:
+    song_ck = (getattr(song, "channel_key", None) or "te").strip().lower()
+    req = (channel_key or "te").strip().lower()
+    if song_ck != req:
+        raise HTTPException(status_code=404, detail="Song not found")
+
+
+def _load_song(
+    db: Session, song_id: uuid.UUID, channel_key: str | None = None
+) -> SongProject:
     song = db.scalar(
         select(SongProject)
         .where(SongProject.id == song_id)
@@ -43,13 +53,19 @@ def _load_song(db: Session, song_id: uuid.UUID) -> SongProject:
     )
     if not song:
         raise HTTPException(status_code=404, detail="Song not found")
+    if channel_key is not None:
+        _require_song_channel(song, channel_key)
     return song
 
 
 @router.post("/songs/{song_id}/visuals/generate")
-def generate_visuals(song_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
+def generate_visuals(
+    song_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    channel_key: ChannelKey = Depends(channel_key_dependency),
+) -> dict:
     """Enqueue Kling 16:9 + Shorts cut. Poll GET /api/v1/jobs/{job_id} for progress."""
-    song = _load_song(db, song_id)
+    song = _load_song(db, song_id, channel_key)
     if not kling_configured():
         raise HTTPException(status_code=503, detail="KLING_API_KEY missing")
     async_result = visuals_generate.delay(str(song.id))
@@ -67,9 +83,13 @@ def generate_visuals(song_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
 
 
 @router.post("/songs/{song_id}/visuals/generate/sync")
-def generate_visuals_sync(song_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
+def generate_visuals_sync(
+    song_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    channel_key: ChannelKey = Depends(channel_key_dependency),
+) -> dict:
     """Blocking generate (debug). Prefer async /visuals/generate + job poll in the UI."""
-    song = _load_song(db, song_id)
+    song = _load_song(db, song_id, channel_key)
     try:
         result = generate_visual_and_shorts(db, song)
     except KlingVideoError as exc:
@@ -77,7 +97,7 @@ def generate_visuals_sync(song_id: uuid.UUID, db: Session = Depends(get_db)) -> 
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"Visual pipeline failed: {exc}") from exc
     db.commit()
-    song = _load_song(db, song_id)
+    song = _load_song(db, song_id, channel_key)
     return {
         "data": {
             **result,
@@ -104,9 +124,10 @@ async def upload_visual(
     song_id: uuid.UUID,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    channel_key: ChannelKey = Depends(channel_key_dependency),
 ) -> dict:
     """Upload a finished 16:9 (or any) video — skips AI generation; cuts Shorts via ffmpeg."""
-    song = _load_song(db, song_id)
+    song = _load_song(db, song_id, channel_key)
     name = file.filename or "upload.mp4"
     suffix = Path(name).suffix.lower() or ".mp4"
     content_type = (file.content_type or "application/octet-stream").lower()
@@ -139,7 +160,7 @@ async def upload_visual(
         ) from exc
 
     db.commit()
-    song = _load_song(db, song_id)
+    song = _load_song(db, song_id, channel_key)
     return {
         "data": {
             **result,
@@ -162,8 +183,12 @@ async def upload_visual(
 
 
 @router.get("/songs/{song_id}/visuals/clip")
-def get_main_clip(song_id: uuid.UUID, db: Session = Depends(get_db)) -> FileResponse:
-    song = _load_song(db, song_id)
+def get_main_clip(
+    song_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    channel_key: ChannelKey = Depends(channel_key_dependency),
+) -> FileResponse:
+    song = _load_song(db, song_id, channel_key)
     if not song.video_clip_path:
         raise HTTPException(status_code=404, detail="No visual clip yet — generate or upload first")
     path = Path(song.video_clip_path)
@@ -174,9 +199,12 @@ def get_main_clip(song_id: uuid.UUID, db: Session = Depends(get_db)) -> FileResp
 
 @router.get("/songs/{song_id}/shorts/{slot_index}/clip")
 def get_short_clip(
-    song_id: uuid.UUID, slot_index: int, db: Session = Depends(get_db)
+    song_id: uuid.UUID,
+    slot_index: int,
+    db: Session = Depends(get_db),
+    channel_key: ChannelKey = Depends(channel_key_dependency),
 ) -> FileResponse:
-    song = _load_song(db, song_id)
+    song = _load_song(db, song_id, channel_key)
     short = next((s for s in (song.shorts or []) if s.slot_index == slot_index), None)
     if not short or not short.clip_path:
         raise HTTPException(status_code=404, detail="Short clip not ready")
@@ -187,9 +215,13 @@ def get_short_clip(
 
 
 @router.post("/songs/{song_id}/final/mix")
-def mix_final(song_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
+def mix_final(
+    song_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    channel_key: ChannelKey = Depends(channel_key_dependency),
+) -> dict:
     """Mux Suno audio + Kling visuals into final long-form + Shorts (preview before publish)."""
-    song = _load_song(db, song_id)
+    song = _load_song(db, song_id, channel_key)
     try:
         result = mix_final_preview(db, song)
     except FinalMixError as exc:
@@ -197,7 +229,7 @@ def mix_final(song_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"Final mix failed: {exc}") from exc
     db.commit()
-    song = _load_song(db, song_id)
+    song = _load_song(db, song_id, channel_key)
     return {
         "data": {
             **result,
@@ -208,8 +240,12 @@ def mix_final(song_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
 
 
 @router.get("/songs/{song_id}/final")
-def get_final_main(song_id: uuid.UUID, db: Session = Depends(get_db)) -> FileResponse:
-    song = _load_song(db, song_id)
+def get_final_main(
+    song_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    channel_key: ChannelKey = Depends(channel_key_dependency),
+) -> FileResponse:
+    song = _load_song(db, song_id, channel_key)
     if not getattr(song, "final_video_path", None):
         raise HTTPException(status_code=404, detail="No final mix yet — run Mix audio + video first")
     path = Path(song.final_video_path)
@@ -220,9 +256,12 @@ def get_final_main(song_id: uuid.UUID, db: Session = Depends(get_db)) -> FileRes
 
 @router.get("/songs/{song_id}/shorts/{slot_index}/final")
 def get_final_short(
-    song_id: uuid.UUID, slot_index: int, db: Session = Depends(get_db)
+    song_id: uuid.UUID,
+    slot_index: int,
+    db: Session = Depends(get_db),
+    channel_key: ChannelKey = Depends(channel_key_dependency),
 ) -> FileResponse:
-    song = _load_song(db, song_id)
+    song = _load_song(db, song_id, channel_key)
     short = next((s for s in (song.shorts or []) if s.slot_index == slot_index), None)
     if not short or not getattr(short, "final_clip_path", None):
         raise HTTPException(status_code=404, detail="Short final mix not ready")

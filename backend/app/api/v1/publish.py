@@ -214,6 +214,7 @@ def schedule_or_publish_now(
     song_id: uuid.UUID,
     body: SchedulePublishBody,
     db: Session = Depends(get_db),
+    channel_key: ChannelKey = Depends(channel_key_dependency),
 ) -> dict:
     song = db.scalar(
         select(SongProject)
@@ -225,6 +226,9 @@ def schedule_or_publish_now(
         )
     )
     if not song:
+        raise HTTPException(status_code=404, detail="Song not found")
+    song_ck = (getattr(song, "channel_key", None) or "te").strip().lower()
+    if song_ck != channel_key:
         raise HTTPException(status_code=404, detail="Song not found")
 
     ready = readiness(song)

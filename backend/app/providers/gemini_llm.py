@@ -95,14 +95,15 @@ def generate_lyrics(
         avoid_echo=avoid_echo,
     )
 
-    primary = (settings.gemini_llm_model or "gemini-3.8-flash").strip()
+    primary = (settings.gemini_llm_model or "gemini-2.5-flash-lite").strip()
+    # Free-tier / lite first — avoid paid 3.8 Flash unless explicitly configured
     model_fallbacks = [
         primary,
-        "gemini-3.8-flash",
-        "gemini-3.5-flash",
+        "gemini-2.5-flash-lite",
         "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
         "gemini-2.5-flash",
-        "gemini-2.5-pro",
+        "gemini-3.5-flash",
     ]
     models = [m for i, m in enumerate(model_fallbacks) if m and m not in model_fallbacks[:i]]
 

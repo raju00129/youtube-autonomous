@@ -28,8 +28,10 @@ class Settings(BaseSettings):
     openai_image_enabled: bool = False
 
     gemini_api_key: str = ""
-    gemini_llm_model: str = "gemini-3.8-flash"
-    gemini_image_model: str = "gemini-3.1-flash-image"
+    # Prefer free-tier Flash-Lite for lyrics (avoid paid 3.8 Flash rates)
+    gemini_llm_model: str = "gemini-2.5-flash-lite"
+    # Cheapest Gemini image model (image gen has no free tier — keep Lite)
+    gemini_image_model: str = "gemini-3.1-flash-lite-image"
     gemini_image_timeout_sec: int = 180
     # Thumbnails / stills ladder starts here: gemini | kling | cursor
     thumbnail_image_provider: str = "gemini"
@@ -37,8 +39,9 @@ class Settings(BaseSettings):
     gemini_video_duration: int = 10
     gemini_video_resolution: str = "720p"
     gemini_video_aspect_ratio: str = "16:9"
-    # Video: auto = Gemini first, Kling on quota/fail; gemini | kling force one
-    video_provider: str = "auto"
+    # Video: kling default — Gemini Omni is paid-tier only
+    # auto = Gemini first, Kling on quota/fail; gemini | kling force one
+    video_provider: str = "kling"
     # scenes = hero stills → animate → FFmpeg assemble (cost-efficient)
     # singleshot = one AI video clip (legacy)
     video_pipeline: str = "scenes"

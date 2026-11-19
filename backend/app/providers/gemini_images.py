@@ -123,17 +123,16 @@ def _try_google_gemini(
     if not settings.gemini_api_key.strip():
         return None
 
-    primary = (settings.gemini_image_model or "gemini-3.1-flash-image").strip()
+    primary = (settings.gemini_image_model or "gemini-3.1-flash-lite-image").strip()
     seen: set[str] = set()
     models: list[str] = []
+    # Lite / cheaper image models first — skip Pro unless configured as primary
     for m in (
         primary,
-        "gemini-3.1-flash-image",
-        "gemini-3-pro-image",
-        "gemini-nano-banana-2.1",
-        "nano-banana-pro-preview",
-        "gemini-2.5-flash-image",
         "gemini-3.1-flash-lite-image",
+        "gemini-2.5-flash-image",
+        "gemini-3.1-flash-image",
+        "gemini-nano-banana-2.1",
     ):
         if m and m not in seen:
             seen.add(m)

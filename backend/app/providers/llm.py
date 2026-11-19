@@ -55,6 +55,16 @@ def generate_lyrics(**kwargs: Any) -> dict[str, Any]:
     if provider == "openai" and not openai_llm.is_configured():
         raise OpenAILlmError("OPENAI_API_KEY missing (LLM_PROVIDER=openai)")
 
+    def _is_gemini_billing_error(msg: str) -> bool:
+        low = msg.lower()
+        return (
+            "http 402" in low
+            or "prepayment" in low
+            or "credits are depleted" in low
+            or "resource_exhausted" in low
+            or "billing" in low
+        )
+
     if try_gemini:
         try:
             data = gemini_llm.generate_lyrics(**kwargs)
@@ -62,10 +72,24 @@ def generate_lyrics(**kwargs: Any) -> dict[str, Any]:
             return _sanitize_generated(data)
         except Exception as exc:  # noqa: BLE001
             msg = str(exc)
-            logger.warning("Gemini lyrics failed, fallback=%s: %s", try_cursor or try_openai, msg[:300])
+            # Prepaid empty / free-tier blocked: use Cursor/OpenAI if keys exist
+            billing_dead = _is_gemini_billing_error(msg)
+            if billing_dead:
+                try_cursor = try_cursor or (
+                    provider == "gemini" and cursor_llm.is_configured()
+                )
+                try_openai = try_openai or (
+                    provider == "gemini" and openai_llm.is_configured()
+                )
+            logger.warning(
+                "Gemini lyrics failed, fallback=%s: %s",
+                try_cursor or try_openai,
+                msg[:300],
+            )
             errors.append(f"gemini: {msg[:240]}")
-            if provider == "gemini":
+            if provider == "gemini" and not (try_cursor or try_openai):
                 raise GeminiLlmError(msg) from exc
+            # billing_dead or auto: fall through to Cursor / OpenAI
 
     if try_cursor:
         try:

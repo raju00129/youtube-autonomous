@@ -96,14 +96,13 @@ def generate_lyrics(
     )
 
     primary = (settings.gemini_llm_model or "gemini-2.5-flash-lite").strip()
-    # Free-tier / lite first — avoid paid 3.8 Flash unless explicitly configured
+    # Stay on free/lite models only — paid Flash hits prepaid billing (HTTP 402).
     model_fallbacks = [
         primary,
         "gemini-2.5-flash-lite",
-        "gemini-3.5-flash-lite",
-        "gemini-3.1-flash-lite",
-        "gemini-2.5-flash",
-        "gemini-3.5-flash",
+        "gemini-2.0-flash-lite",
+        "gemini-flash-lite-latest",
+        "gemini-2.0-flash",
     ]
     models = [m for i, m in enumerate(model_fallbacks) if m and m not in model_fallbacks[:i]]
 
@@ -153,6 +152,13 @@ def generate_lyrics(
                     continue
                 if response.status_code >= 400:
                     last_err = f"{model}: HTTP {response.status_code} {response.text[:400]}"
+                    # Billing / prepaid empty — further Gemini models will fail the same way
+                    if response.status_code in {401, 402, 403} or (
+                        "prepayment" in response.text.lower()
+                        or "credits are depleted" in response.text.lower()
+                        or "billing" in response.text.lower()
+                    ):
+                        break
                     continue
                 body = response.json()
                 if body.get("candidates"):
